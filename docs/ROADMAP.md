@@ -44,6 +44,24 @@ curve and a recorded failure drill demonstrate more than a mocked unit test does
 | 7 | Pre-scaling from a schedule, unattended |
 | 8 | Grafana dashboards under surge |
 
+## Scope boundary
+
+**Phases 0–6 are the core scope. Phases 7–8 are optional depth.**
+
+At the end of **phase 5** the system is complete end to end: ingest through Kafka, folded into
+Postgres and Redis, served through a cached read path, with real latency numbers and the surge
+A/B result from phase 2.
+
+**Phase 6 closes the core scope** — three deliberate dependency failures under load, recorded. It
+introduces no new technology and is cheap relative to what it proves, which is why it sits inside
+the boundary rather than outside it.
+
+**Phases 7–8 complete DIFF-2 (pre-scaling from a schedule) and NFR-11 (dashboards).** Both remain
+fully specified and are genuinely valuable, but they are the most expensive work in the plan, and
+the system is coherent and demonstrable without them.
+
+**A finished phase 6 beats an abandoned phase 8.**
+
 ---
 
 ## Phase 0 — Core Java and the domain model · *FR-6, NFR-10*
@@ -133,7 +151,7 @@ any infrastructure exists. Everything after this makes the same result bigger.
 - [ ] Data survives `docker compose down && up`
 - [ ] `EXPLAIN ANALYZE` output for the continue-watching query is committed
 
-## Phase 5 — Redis, cache, and the read path · *FR-3, FR-4, FR-5, NFR-3, NFR-4* · **STOP LINE**
+## Phase 5 — Redis, cache, and the read path · *FR-3, FR-4, FR-5, NFR-3, NFR-4*
 
 **Technology from zero: Redis and caching strategy.**
 
@@ -150,7 +168,7 @@ any infrastructure exists. Everything after this makes the same result bigger.
 - [ ] `README.md` opens with numbers
 - [ ] **The system is complete end to end and measured.**
 
-## Phase 6 — Chaos drills · *NFR-9, DIFF-4, DIFF-5*
+## Phase 6 — Chaos drills · *NFR-9, DIFF-4, DIFF-5* · **END OF CORE SCOPE**
 
 **Cheap, high impact.** No new technology — `docker kill` and a notepad.
 
