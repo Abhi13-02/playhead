@@ -1,0 +1,10 @@
+# Compiled Java bytecode — regenerated from source, never committed
+*.class
+
+# Gradle build output and local state
+.gradle/
+build/
+
+# IDE
+.vscode/
+.idea/
