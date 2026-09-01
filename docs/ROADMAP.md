@@ -26,11 +26,9 @@ behaviour has not been demonstrated does not close a phase.
 function with no framework, no mocks, no fixtures. `assertEquals` only.
 
 Everything else is verified by running it under load and recording real output. This is a
-**position, not a gap**:
-
-> *"The fold is a pure function, so it has unit tests. Everything else I verified under real load
-> with k6 and by killing dependencies while traffic was flowing — for a distributed system that
-> tells you more than a mock does."*
+**deliberate position, not a gap** — for a distributed system, a measured p99 under a real load
+curve and a recorded failure drill demonstrate more than a mocked unit test does. See
+[DECISIONS.md](DECISIONS.md) D-009.
 
 ## What is demonstrable at each phase
 
@@ -83,7 +81,7 @@ Everything else is verified by running it under load and recording real output. 
 - [ ] `curl` shows 202 valid / 400 with field names invalid
 - [ ] Startup logs show the embedded server bound to a port with no manually-written server code
 
-## Phase 2 — Load, saturation, and the surge result · *FR-9, NFR-5, NFR-7, D-1, D-3* · **HEADLINE**
+## Phase 2 — Load, saturation, and the surge result · *FR-9, NFR-5, NFR-7, DIFF-1, DIFF-3* · **HEADLINE**
 
 **Technology from zero: JVM concurrency and load testing.** The differentiator lands here, before
 any infrastructure exists. Everything after this makes the same result bigger.
@@ -150,7 +148,7 @@ any infrastructure exists. Everything after this makes the same result bigger.
 - [ ] `README.md` opens with numbers
 - [ ] **The system is complete end to end and measured.**
 
-## Phase 6 — Chaos drills · *NFR-9, D-4*
+## Phase 6 — Chaos drills · *NFR-9, DIFF-4*
 
 **Cheap, high impact.** No new technology — `docker kill` and a notepad.
 
@@ -165,7 +163,7 @@ any infrastructure exists. Everything after this makes the same result bigger.
 - [ ] At least one genuine unplanned failure written up
 - [ ] Degraded-mode behaviour is documented from real drills, not asserted.
 
-## Phase 7 — Pre-scaling from a schedule · *FR-7, FR-8, NFR-6, D-2*
+## Phase 7 — Pre-scaling from a schedule · *FR-7, FR-8, NFR-6, DIFF-2*
 
 **No Kubernetes.** `docker compose up --scale` driven by a controller gives the same engineering
 story far more cheaply. The k8s version is phase 8, and optional.
@@ -199,7 +197,7 @@ Everything here is optional. Do it if there is time; skip it without guilt.
 
 ## Explicitly cut
 
-Recorded so nobody re-adds them. See [DECISIONS.md](DECISIONS.md) D-012.
+Recorded so nobody re-adds them. See [DECISIONS.md](DECISIONS.md) D-007 and D-011.
 
 | Cut | Why |
 |---|---|

@@ -54,7 +54,8 @@ reproduced under controlled load rather than argued about.
 ## 3. What Playhead is not
 
 - **Not a video player, transcoder, packager or CDN.** No media bytes pass through it.
-- **Not a recommendation engine.** It answers *where were you* and *what is popular now*.
+- **Not a recommendation engine.** It answers *where were you*, nothing more.
+- **Not an analytics platform.** No trending, top-K, or unique-viewer counting.
 - **Not an auth or entitlement service.** Profiles are opaque identifiers.
 - **Not an algorithms showcase.** Where a good library exists, use it and say why. Caffeine is
   W-TinyLFU written by the people who published the paper; reimplementing it proves nothing about
@@ -97,19 +98,22 @@ the new value and the reason in [DECISIONS.md](DECISIONS.md). Never silently mov
 | **NFR-8** | Durability | No acknowledged heartbeat lost across a broker or consumer restart. | drill |
 | **NFR-9** | **Degradation** | Redis down -> reads fall back to Postgres. Postgres down -> writes still accepted, buffered in Kafka. Consumer stalled -> lag recovers with no duplicate application. | three drills |
 | **NFR-10** | Idempotency | Replaying the log yields identical final state. | test |
-| **NFR-11** | Observability | p50/p95/p99, error rate, consumer lag, pod count, cache hit rate all visible in Grafana during a surge. | dashboard |
-| **NFR-12** | Cost honesty | Pre-scaling wastes capacity. Measure the idle pod-minutes and state the trade-off. | recorded |
+| **NFR-11** | Observability | p50/p95/p99, error rate, consumer lag, instance count, cache hit rate all visible in Grafana during a surge. | dashboard |
+| **NFR-12** | Cost honesty | Pre-scaling wastes capacity. Measure the idle instance-minutes and state the trade-off. | recorded |
 | **NFR-13** | Resource envelope | Everything runs inside the 12 GB VM with declared limits per service. | `docker stats` |
 
 ## 6. The differentiators — non-negotiable
 
+*Referenced as `DIFF-n` throughout. Distinct from `D-nnn` in [DECISIONS.md](DECISIONS.md), which
+are engineering decisions.*
+
 | # | Differentiator | What "done" means |
 |---|---|---|
-| **D-1** | **Surge survival, measured** | Two runs of one k6 premiere curve — guard layer off, then on — and the numbers between them. This is the headline. |
-| **D-2** | **Pre-scaling from a schedule** | A controller that reads upcoming events and raises capacity *before* the spike, because reactive autoscaling cannot catch a 60-second ramp. |
-| **D-3** | **Priority-tiered admission control** | Under overload the system chooses what to drop, and playback writes are never what it drops. |
-| **D-4** | **Degradation, not failure** | Redis, Postgres and the consumer each killed deliberately under load. Documented degraded modes, real output. |
-| **D-5** | **Evidence** | k6 tables, Grafana dashboards, and an `ENGINEERING_LOG.md` of failures that really happened. |
+| **DIFF-1** | **Surge survival, measured** | Two runs of one k6 premiere curve — guard layer off, then on — and the numbers between them. This is the headline. |
+| **DIFF-2** | **Pre-scaling from a schedule** | A controller that reads upcoming events and raises capacity *before* the spike, because reactive autoscaling cannot catch a 60-second ramp. |
+| **DIFF-3** | **Priority-tiered admission control** | Under overload the system chooses what to drop, and playback writes are never what it drops. |
+| **DIFF-4** | **Degradation, not failure** | Redis, Postgres and the consumer each killed deliberately under load. Documented degraded modes, real output. |
+| **DIFF-5** | **Evidence** | k6 tables, Grafana dashboards, and an `ENGINEERING_LOG.md` of failures that really happened. |
 
 ## 7. The bar
 
@@ -117,8 +121,8 @@ the new value and the reason in [DECISIONS.md](DECISIONS.md). Never silently mov
 2. **Every result has a control run.** The surge numbers mean nothing without the run that
    collapsed. The comparison *is* the contribution.
 3. **Failure is demonstrated, not described.**
-4. **Costs are stated.** Pre-scaling wastes money. Say how much.
-5. **Every line is explainable by its author.** This overrides speed.
+4. **Costs are stated.** Pre-scaling wastes capacity. The waste is measured and reported alongside
+   the benefit, not omitted.
 
 ## 8. Forbidden shortcuts
 
@@ -139,7 +143,7 @@ the new value and the reason in [DECISIONS.md](DECISIONS.md). Never silently mov
 | Hot state | Redis 7 |
 | Durable state | PostgreSQL 16 |
 | Cache library | **Caffeine** — not hand-built |
-| Orchestration | Docker Compose, then k3s (HPA + the pre-scaling controller) |
+| Orchestration | Docker Compose (k3s + HPA optional — D-013) |
 | Metrics | Prometheus + Grafana |
 | Load testing | k6 |
 | Target | A 12 GB Oracle Cloud VM |
@@ -149,8 +153,9 @@ Rationale in [DECISIONS.md](DECISIONS.md) D-001 and D-013.
 ## 10. End state
 
 **The repository contains:** `ingest-api`, `read-api`, `fold-consumer`, `event-schedule`,
-`scaling-controller`; a shared admission-control module; `docker-compose.yml`; k3s manifests with
-an HPA; k6 spike profiles; Grafana dashboards; and a `README.md` opening with the surge table.
+`scaling-controller`; a shared admission-control module; `docker-compose.yml`; k6 spike profiles;
+Grafana dashboards; and a `README.md` opening with the surge table. Optionally, k3s manifests with
+an HPA (D-013).
 
 **The demo, in order:**
 
@@ -162,11 +167,9 @@ an HPA; k6 spike profiles; Grafana dashboards; and a `README.md` opening with th
 5. **Run B — guard layer on.** Same curve. p99 holds, errors near zero, and what got shed was
    browse traffic, not playback.
 6. `docker kill redis` mid-run. Latency steps up. Error rate stays flat.
-7. Open `ENGINEERING_LOG.md` and talk through something that genuinely broke.
+7. Open `ENGINEERING_LOG.md` and walk through a failure that occurred during development.
 
-**The sentence it must earn:**
-
-> *"I built the playback backend for a streaming service and made it survive a premiere. Reactive
-> autoscaling couldn't catch a 60-second ramp, so I pre-scale from the event schedule and shed by
-> priority when it still isn't enough. I can show you the run where it collapses and the run where
-> it doesn't, and tell you what the pre-scaling costs."*
+**What the demo establishes:** that reactive autoscaling cannot catch a 60-second ramp; that
+pre-scaling from a known event schedule can; that under overload the system sheds by priority
+rather than failing indiscriminately; and that the cost of that headroom is measured rather than
+hidden.
