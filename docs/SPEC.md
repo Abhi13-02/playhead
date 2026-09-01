@@ -162,8 +162,8 @@ an HPA (D-013).
 1. State the problem: a tentpole event takes traffic from idle to peak in under a minute.
 2. `docker compose up`. Simulated players emit heartbeats; the dashboard is calm.
 3. Register a tentpole event starting in two minutes. Watch the controller pre-scale.
-4. **Run A — guard layer off.** k6 drives 0 -> peak in 60s. p99 blows out, errors climb, the HPA is
-   still scaling when the spike has already passed.
+4. **Run A — guard layer off.** k6 drives 0 -> peak in 60s. p99 blows out, errors climb, and
+   reactive scaling is still catching up when the spike has already passed.
 5. **Run B — guard layer on.** Same curve. p99 holds, errors near zero, and what got shed was
    browse traffic, not playback.
 6. `docker kill redis` mid-run. Latency steps up. Error rate stays flat.

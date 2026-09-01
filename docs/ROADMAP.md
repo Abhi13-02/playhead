@@ -46,7 +46,7 @@ curve and a recorded failure drill demonstrate more than a mocked unit test does
 
 ---
 
-## Phase 0 — Core Java and the domain model
+## Phase 0 — Core Java and the domain model · *FR-6, NFR-10*
 
 **Technology from zero: Java.** No Spring, no Docker, no network. Single files run with
 `java Foo.java` until JUnit forces a build tool.
@@ -101,7 +101,7 @@ any infrastructure exists. Everything after this makes the same result bigger.
 - [ ] Shed responses carry `429` + `Retry-After`; rejection reason is visible in metrics
 - [ ] The surge result is reproducible on demand.
 
-## Phase 3 — Kafka · *FR-1, NFR-2, NFR-8*
+## Phase 3 — Kafka · *FR-1, FR-10, NFR-2, NFR-8*
 
 **Technology from zero: Kafka.** First container.
 
@@ -114,6 +114,8 @@ any infrastructure exists. Everything after this makes the same result bigger.
 **Gate**
 - [ ] A heartbeat posted before a broker restart is still processed after it
 - [ ] One profile's heartbeats are provably confined to a single partition
+- [ ] **Replay (FR-10):** consuming the topic from offset 0 into an empty store reproduces
+      byte-identical state — the fold's sequence check makes this free
 
 ## Phase 4 — PostgreSQL · *NFR-8*
 
@@ -148,7 +150,7 @@ any infrastructure exists. Everything after this makes the same result bigger.
 - [ ] `README.md` opens with numbers
 - [ ] **The system is complete end to end and measured.**
 
-## Phase 6 — Chaos drills · *NFR-9, DIFF-4*
+## Phase 6 — Chaos drills · *NFR-9, DIFF-4, DIFF-5*
 
 **Cheap, high impact.** No new technology — `docker kill` and a notepad.
 
@@ -163,7 +165,7 @@ any infrastructure exists. Everything after this makes the same result bigger.
 - [ ] At least one genuine unplanned failure written up
 - [ ] Degraded-mode behaviour is documented from real drills, not asserted.
 
-## Phase 7 — Pre-scaling from a schedule · *FR-7, FR-8, NFR-6, DIFF-2*
+## Phase 7 — Pre-scaling from a schedule · *FR-7, FR-8, NFR-6, NFR-12, DIFF-2*
 
 **No Kubernetes.** `docker compose up --scale` driven by a controller gives the same engineering
 story far more cheaply. The k8s version is phase 8, and optional.
@@ -180,7 +182,7 @@ story far more cheaply. The k8s version is phase 8, and optional.
       arithmetic (metric delay + scrape interval + stabilisation window + start time) is recorded
 - [ ] The cost is stated: idle instance-minutes spent buying the headroom
 
-## Phase 8 — Polish · *NFR-11*
+## Phase 8 — Polish · *NFR-11, NFR-13*
 
 Everything here is optional. Do it if there is time; skip it without guilt.
 
@@ -192,6 +194,8 @@ Everything here is optional. Do it if there is time; skip it without guilt.
 
 **Gate**
 - [ ] Someone who has never seen the repo can run it from the README alone
+- [ ] **Resource envelope (NFR-13):** `docker stats` recorded, showing the whole system inside the
+      12 GB envelope with a declared limit per service
 
 ---
 
