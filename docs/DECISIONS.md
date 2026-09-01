@@ -1,217 +1,153 @@
 # Decision log
 
-Every non-obvious choice, with the reasoning and what was rejected. Append-only: to change a
-decision, add a new entry that supersedes the old one rather than editing history.
+Every non-obvious engineering choice, with the reasoning and what was rejected. Append-only: to
+change a decision, add a new entry that supersedes the old one rather than editing history.
 
-**Agents: do not re-open a decision marked `SETTLED`.** If you believe one is wrong, say so to
-Abhinav and let him decide — do not quietly implement something different.
-
-Interview value: an interviewer who asks "why did you choose X?" is asking for exactly this file.
-The answer "here is what I chose and here is what I rejected" is a much stronger answer than a
-justification invented on the spot.
+Do not re-open a decision marked `SETTLED` without a new entry explaining what changed.
 
 ---
 
 ## D-001 · The stack · `SETTLED`
 
-**Java 25, Spring Boot 4, Kafka, PostgreSQL, Redis, Kubernetes, AWS-shaped.**
+**Java 25, Spring Boot 4, Apache Kafka, PostgreSQL 16, Redis 7, Docker.**
 
-Chosen to mirror WBD India's real backend stack, taken from their job postings: Java, Kafka,
-Kubernetes/EKS, PostgreSQL, strong SQL. They run a dedicated Kafka team (AMS). The project is a
-deliberate match to the interviewer's daily vocabulary.
+The JVM is where this problem's ecosystem lives: Kafka, Flink and Spark are all JVM-native, and
+Kafka is the backbone of the write path. Java 25 specifically for virtual threads, which suit an
+ingest workload of many concurrent, mostly-blocked requests.
 
-*Rejected:* Python/FastAPI or Node — Abhinav already knows both, so neither demonstrates growth,
-and neither matches the target stack. Go — closer in spirit, still not their stack.
-
----
-
-## D-002 · The project idea · `SETTLED`
-
-**A playback-state and live-engagement platform, not a recommender or a clone of Max.**
-
-Research into WBD's interview loop (first-hand accounts on GeeksforGeeks and Taro) shows the
-technical round leaves DSA quickly and becomes an OTT system-design conversation — one candidate
-was asked to design a show recommendation system and pushed on *space complexity, caching strategy,
-memory utilisation and database choice*. The managerial round re-opens the same design.
-
-The project is chosen so **their hardest round becomes a demo of already-shipped work.**
-
-*Rejected:* a recommendation engine — the interesting parts are ML, not systems, and it invites
-questions about model quality rather than engineering. A video transcoding pipeline — impressive
-but unbuildable on a 12 GB VM and unrelated to their backend roles.
+*Rejected:* **Go** — genuinely well suited to this workload and lighter on memory, but no
+first-class Kafka Streams / Flink story. **Node** — the single-threaded event loop makes the
+high-throughput write path harder to reason about and defend.
 
 ---
 
-## D-003 · `202 Accepted`, not `200 OK`, for heartbeat ingest · `SETTLED`
+## D-002 · `202 Accepted`, not `200 OK`, for heartbeat ingest · `SETTLED`
 
 `200` means the work is done. `202` means responsibility is accepted but processing has not
-happened. Once Kafka sits in front of storage that is literally true. Writing the contract this way
-from the first commit means player clients never have to change.
+happened yet. Once Kafka sits in front of storage that is literally true — the response is sent
+before the heartbeat is folded into state. Writing the contract this way from the first commit
+means player clients never have to change when the async path lands.
 
 ---
 
-## D-004 · Heartbeats go to Kafka, never synchronously to Postgres · `SETTLED`
+## D-003 · Heartbeats go to Kafka, never synchronously to PostgreSQL · `SETTLED`
 
-100,000 concurrent streams ÷ one heartbeat per 10 s ≈ **10,000 writes/sec**, forever, and every one
-is an update to the *same* row for that profile and title — so lock contention on top of write
-volume. Meanwhile the data is nearly worthless: losing the last ten seconds of progress is
-invisible to a viewer. Durable log, asynchronous fold, player latency decoupled from storage.
+100,000 concurrent streams ÷ one heartbeat per 10s ≈ **10,000 writes/sec**, sustained — and every
+one is an update to the *same* row for that profile and title, so lock contention compounds the
+write volume.
 
----
-
-## D-005 · Carry `deviceId` and `sequence` before they are used · `SETTLED`
-
-Cross-device resume (phase 9) needs both. Adding fields to a contract that player clients already
-depend on is expensive; carrying two unused fields is free.
+Meanwhile the data is cheap to lose: a viewer never notices losing the last ten seconds of
+progress. Durable log, asynchronous fold, player-facing latency decoupled from storage.
 
 ---
 
-## D-006 · `study/` lives outside the git repository · `SETTLED`
+## D-004 · Carry `deviceId` and `sequence` before anything reads them · `SETTLED`
 
-A `study/` folder inside the repo signals to a WBD reviewer that the author was learning as he went.
-The repository is a work product. Learning material sits beside it, never in it, and is never
-committed.
-
-**Corollary:** agent instruction files (`CLAUDE.md`, `AGENTS.md`, `WORKING_AGREEMENT.md`) also live
-outside the repo. Engineering documents (`SPEC.md`, `ROADMAP.md`, `ARCHITECTURE.md`, this file,
-`BENCHMARKS.md`, `ENGINEERING_LOG.md`) live **inside** it — they make the repo more impressive, not
-less, because writing them is what a senior engineer does.
+Cross-device resume needs both. Adding fields to a contract that player clients already depend on
+is expensive; carrying two unused fields costs nothing.
 
 ---
 
-## D-007 · Build the cache lab before the write path · ~~SETTLED~~ **SUPERSEDED by D-012**
+## D-005 · The fold compares sequence numbers, and is a pure function · `SETTLED`
 
-Originally: phase 1 is the cache lab, not Kafka and Postgres.
+A heartbeat is applied only if its `sequence` is strictly greater than the one that produced the
+current state. Out-of-order and duplicate delivery are both normal over a network; blind overwrite
+would let a late-arriving older heartbeat rewind a viewer's position.
 
-**No longer applies.** There is no cache lab — the hand-built cache was cut entirely when the
-differentiator changed to surge survival. The one principle worth carrying forward is the reason it
-was ordered first: *start with what no infrastructure can block*. That survives as phase 0, which
-is plain Java with no Docker and no network.
+`Fold` is a separate class rather than a method on `PlaybackState`: the operation needs both types
+and belongs to neither, and keeping it separate means `PlaybackState` has exactly one reason to
+change (its data shape) rather than two.
 
----
-
-## D-008 · No time component in the roadmap · `SETTLED` *(2026-09-01)*
-
-Phases, not weeks. No dates, no ship-by. Ordering is by interview value and by what cannot be
-blocked. A calendar in the roadmap invites cutting corners to hit a date, which is the exact
-failure mode this project cannot afford.
+*Rejected:* hybrid logical clocks — correct, but the sequence comparison achieves the same
+guarantee for this workload at a fraction of the complexity.
 
 ---
 
-## D-009 · The repository is public · `SETTLED` *(2026-09-01)*
+## D-006 · The fold never receives a `null` current state · `SETTLED`
 
-It is a portfolio artifact; a reviewer must be able to read it without being granted access.
+The caller supplies a real starting `PlaybackState` (position 0, sequence 0) for a key with no
+history, so `Fold` has exactly one job — compare two sequence numbers — rather than also branching
+on absence.
 
----
-
-## D-010 · Restart from an empty directory · `SETTLED` *(2026-09-01)*
-
-The first attempt produced a Gradle skeleton, an `ingest-api` service and a `cache-lab` module
-faster than Abhinav could absorb them. He could not have defended the code, which makes it worse
-than useless — it creates false confidence going into an interview.
-
-Everything was deleted and the project restarted from an empty directory under a stricter working
-agreement: **one file per turn, explained before it is written, approved before it exists.**
-
-This is the single most important entry in this file. The failure it records is the one most likely
-to recur, because moving fast always feels like progress.
+*Rejected:* `Optional<PlaybackState>` — allocates on a path called on every heartbeat, and pushes
+the same branch to the caller anyway.
 
 ---
 
-## D-011 · No `Co-Authored-By` trailer on commits · `SETTLED` *(2026-09-01)*
+## D-007 · Use Caffeine rather than hand-writing a cache · `SETTLED`
 
-The repo is public and its purpose is to show a reviewer Abhinav's engineering.
+Caffeine implements W-TinyLFU, written by the authors of the paper. Reimplementing a well-solved
+library problem adds risk and maintenance cost without adding capability.
+
+The engineering effort this frees goes into the behaviour that actually distinguishes this system:
+surge absorption, pre-scaling, and documented degradation under dependency failure.
+
+The same reasoning applies to sketch data structures — Count-Min, HyperLogLog, Bloom filters — if
+approximate analytics are ever added.
 
 ---
 
-## D-012 · The differentiator is surge survival, not hand-built data structures · `SETTLED` *(2026-09-01)*
+## D-008 · Kafka topic partitioned by `profileId` · `SETTLED`
 
-v1 of the spec differentiated on hand-written W-TinyLFU, Count-Min Sketch and HyperLogLog. That is
-now **rejected**, for two reasons Abhinav identified himself:
+Kafka guarantees ordering only *within* a partition. Keying by `profileId` keeps one profile's
+heartbeats on one partition and therefore in order, which is what makes the fold's sequence
+comparison meaningful. A random or round-robin key would scatter a single viewer's events across
+partitions and destroy the ordering guarantee the correctness model depends on.
 
-1. **It invites the wrong interview.** An algorithm-heavy project makes an interviewer ask him to
-   implement algorithms on a whiteboard. He wants the conversation to be about engineering and
-   scaling.
-2. **It reinforces an existing strength.** His DSA is already strong. Spending half the project
-   there buys almost nothing; he cannot currently claim to have built and operated a distributed
-   system, and that is what the effort should buy.
+---
 
-The system is unchanged. The differentiator is now **surviving a tentpole event** — pre-scaling
-from an event schedule, priority-tiered admission control, and a measured before/after under a
-premiere-shaped load curve.
+## D-009 · Testing is deliberately minimal · `SETTLED`
 
-**Use Caffeine for caching.** "I used the library and here is why" is the senior answer;
-reimplementing it proves nothing about engineering judgment.
+Unit tests cover the fold — a pure function, where a test is the cheapest and most direct proof of
+correctness. Everything downstream (throughput, latency, cache behaviour, failure recovery) is
+verified by running the system under real load and by killing dependencies while traffic flows.
 
-*Evidence this is the right target:* WBD's own engineering blog states that for premieres,
-"pre-scaling the platform was essential as autoscaling couldn't always keep up with the
+For a distributed system, a measured p99 under a real load curve and a recorded failure drill say
+more than a mocked unit test does.
+
+*Rejected:* mocking frameworks, Testcontainers-based integration tests, property-based testing —
+all reasonable in a larger codebase; here they would cost more than the confidence they add.
+
+---
+
+## D-010 · No time component in the roadmap · `SETTLED`
+
+Phases, not weeks. Ordering is by dependency and by what cannot be blocked by infrastructure. A
+calendar in a roadmap invites cutting corners to hit a date.
+
+---
+
+## D-011 · The differentiator is surge survival · `SETTLED`
+
+An earlier revision of the spec centred on hand-built data structures. Superseded by D-007.
+
+What distinguishes this system is behaviour under a **tentpole event** — a premiere or live match
+taking traffic from idle to peak in under a minute:
+
+- capacity pre-scaled from an event schedule, because reactive autoscaling cannot catch a
+  60-second ramp (metric delay + scrape interval + stabilisation window + pod start time)
+- priority-tiered admission control, shedding browse traffic before playback writes
+- a measured before/after under the same load curve — the control run is what makes the result
+  mean anything
+
+*Supporting evidence:* WBD's engineering blog reports that for simultaneous linear + digital
+premieres, "pre-scaling the platform was essential as autoscaling couldn't always keep up with the
 acceleration in RPS."
 
 ---
 
-## D-013 · Java, not Go or Node · `SETTLED` *(2026-09-01)*
+## D-012 · Standard `src/main/java` / `src/test/java` layout · `SETTLED`
 
-**Java 25 + Spring Boot**, despite Abhinav having zero Java experience.
-
-- **Recognition.** WBD postings list Java; the project only works as an interview-steering device
-  if the interviewer engages with it rather than skipping past an unfamiliar language.
-- **Ecosystem.** Kafka, Flink and Spark are JVM-native. Their Principal role asks for Kafka+Flink.
-- **Netflix is a JVM shop** (Hystrix, Zuul, Eureka, Spring Cloud Netflix) and is acquiring Warner
-  Bros. including HBO Max — see D-014.
-- **Transferability.** Java is the highest-value backend language in the Indian product market.
-- **The Java questions asked in Indian campus interviews are disguised DSA and OS questions**
-  (HashMap internals, GC, concurrency). Java turns the language round into a home game.
-
-*Rejected:* **Go** — genuinely better suited to the workload and far easier to learn, with a much
-smaller memory footprint on a 12 GB VM, but a weaker keyword match and no Flink/Spark. **Node** —
-he already knows it, so it demonstrates no growth, and the event-loop model makes the throughput
-story harder to defend.
-
-**The real risk is Spring's magic, not Java the language.** Mitigation: keep Spring's surface
-deliberately thin, teach every annotation at the moment it appears, and bank the Spring questions
-in `study/qbank/01-spring.md`.
+The conventional Gradle/Maven source layout. Files sat flat at the repository root during early
+development, when everything ran through single-file source execution (`java Foo.java`) and no
+build tool was involved. Moved once Gradle needed to locate sources and tests by convention.
 
 ---
 
-## D-014 · Optimise for streaming reliability, not for one employer · `SETTLED` *(2026-09-01)*
+## D-013 · Kubernetes is optional, not required · `SETTLED`
 
-Netflix announced (5 Dec 2025) it is acquiring Warner Bros. — including HBO Max and HBO — for
-~$82.7B enterprise value, closing 12–18 months after the Discovery Global separation slated for
-Q3 2026, subject to regulatory approval. WBD itself splits into Streaming & Studios and Discovery
-Global.
+Pre-scaling is demonstrated with `docker compose up --scale` driven by a controller. The
+engineering argument — reactive autoscaling cannot catch a fast ramp, so capacity is raised ahead
+of a scheduled event — is identical whether the orchestrator is Compose or Kubernetes.
 
-The Hyderabad centre (~1,500 engineers, targeting 2,500 by 2027) works on the Max streaming
-platform, recommendation AI and ad-tech analytics — so that org is on a path into Netflix.
-
-**Consequence for the project:** target *large-scale streaming reliability*, which is the
-intersection of WBD, Netflix, JioHotstar, Disney+ and Amazon — not WBD-specific trivia. Hiring
-freezes during acquisitions are a real risk entirely outside Abhinav's control; the project should
-be valuable regardless of which entity is hiring.
-
----
-
-## D-015 · The build order is also the syllabus · `SETTLED` *(2026-09-01)*
-
-Abhinav knows no Java, Spring, Kafka, Redis, Postgres internals, Docker or Kubernetes. Rather than
-studying separately, **each phase introduces exactly one technology from zero, builds one part of
-the system with it, and banks that technology's most-asked interview questions.**
-
-Every phase gate includes a comprehension condition: the phase's `study/qbank/` file exists and he
-can answer five of its questions aloud, without notes. Building something he cannot explain is a
-failed phase, not a passed one. Full design in `study/LEARNING_PLAN.md`.
-
----
-
-## Provisional — agreed direction, re-derived with Abhinav during the build
-
-These are design intentions, not yet built. They exist so an agent knows the destination. **Teach
-them when the code is written; do not simply implement them silently.**
-
-| ID | Direction | Why |
-|---|---|---|
-| ~~P-001..P-004~~ | *Retired by D-012* — these concerned the hand-built cache, which is no longer being built. | |
-| **P-008** | Priority tiers: playback write > resume read > browse | Under overload the system must protect the write that loses a viewer's place, and shed the request they will simply retry. |
-| **P-009** | Pre-scale lead time derived from measured pod start time, not guessed | The whole thesis is that reactive scaling is too slow; the lead time must come from measurement or the argument is circular. |
-| **P-005** | Kafka topic partitioned by `profileId` | Keeps one profile's events ordered on a single partition, which is what makes the fold correct. |
-| **P-006** | Postgres events table is partitioned, with a covering index for continue-watching | The table grows without bound; continue-watching is the only latency-critical query against it. |
-| **P-007** | No build tool until JUnit forces one | `java Foo.java` runs a single file since Java 11. Gradle should arrive when a downloaded dependency makes it necessary, so its purpose is understood rather than inherited. |
+A k3s + HPA deployment is the production-shaped version and remains optional polish.

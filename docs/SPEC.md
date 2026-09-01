@@ -1,14 +1,9 @@
 # Playhead — Specification
 
-**Status:** draft v2 · **Owner:** Abhinav Dev · **Last revised:** 2026-09-01
-
-> **v2 changed the thesis.** v1 differentiated on hand-built data structures (W-TinyLFU, Count-Min,
-> HyperLogLog). That was rejected: it invited algorithm questions instead of engineering questions,
-> and reinforced a strength Abhinav already has. v2 keeps the same system and replaces the
-> differentiator with **surviving a tentpole event**. See [DECISIONS.md](DECISIONS.md) D-012.
+**Status:** v2 · **Last revised:** 2026-09-02
 
 This document defines *what* Playhead must do and *how well*. [ROADMAP.md](ROADMAP.md) defines the
-order of construction; [PROJECT_STATE.md](PROJECT_STATE.md) records where construction has reached.
+order of construction.
 
 Read this completely before writing code. A phase that satisfies its features but misses its
 non-functional requirements is not finished.
@@ -41,7 +36,8 @@ PROVE   k6 premiere curve --> Prometheus/Grafana --> run A collapses, run B hold
 
 ## 2. Why this problem
 
-WBD's own engineers published it. On premiere traffic:
+It is a documented problem in production streaming platforms. On premiere traffic, Warner Bros.
+Discovery's engineering team reports:
 
 > *"Premier content, like Game of Thrones, Succession, and Euphoria, is released simultaneously on
 > linear and digital platforms which causes a significant increase in requests per second (RPS) to
@@ -52,7 +48,8 @@ They cite House of the Dragon S2 RPS curves and describe forcing portfolio-wide 
 anticipated events. Elsewhere they name **graceful degradation during outages** as a core
 challenge, across 125M+ subscribers and three AWS regions per continent.
 
-The project is chosen so that **their hardest problem is the one already demonstrated on a laptop.**
+This system exists to make that problem tractable and, crucially, **measurable** — the surge is
+reproduced under controlled load rather than argued about.
 
 ## 3. What Playhead is not
 
@@ -157,7 +154,7 @@ an HPA; k6 spike profiles; Grafana dashboards; and a `README.md` opening with th
 
 **The demo, in order:**
 
-1. Show the WBD engineering quote. *"This is your problem. Here it is, solved."*
+1. State the problem: a tentpole event takes traffic from idle to peak in under a minute.
 2. `docker compose up`. Simulated players emit heartbeats; the dashboard is calm.
 3. Register a tentpole event starting in two minutes. Watch the controller pre-scale.
 4. **Run A — guard layer off.** k6 drives 0 -> peak in 60s. p99 blows out, errors climb, the HPA is

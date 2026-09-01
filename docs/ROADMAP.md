@@ -1,12 +1,12 @@
 # Playhead — Roadmap
 
 Construction order. [SPEC.md](SPEC.md) says what to build; this says in what order and how to know
-a phase is finished. [PROJECT_STATE.md](PROJECT_STATE.md) says where we have reached.
+a phase is finished.
 
 **No time component.** Ordering follows three rules:
 
-1. **Every phase ends with something demonstrable.** If an interview happens tomorrow, there is
-   always something to show and talk about. Nothing important is deferred to the end.
+1. **Every phase ends with something demonstrable.** No capability is deferred to the end; each
+   phase leaves the system in a state that can be run and shown.
 2. **One technology per phase**, introduced only when the build genuinely needs it.
 3. **Cut anything expensive that is not strictly necessary.** Crisp beats complete.
 
@@ -15,11 +15,10 @@ a phase is finished. [PROJECT_STATE.md](PROJECT_STATE.md) says where we have rea
 ## The gate rule
 
 Every phase ends with a **Gate**: checkable facts. Work does not begin on phase N+1 until every
-gate item for phase N is true and recorded in `PROJECT_STATE.md`.
+gate item for phase N is true.
 
-A gate is never "the code exists" — it is "the thing is proven, and the author can explain it".
-Each gate includes a **question-bank item**, because each phase teaches one technology from zero
-(see `study/LEARNING_PLAN.md`). Building something he cannot explain is a failed phase.
+A gate is never "the code exists" — it is "the behaviour is proven". Building something whose
+behaviour has not been demonstrated does not close a phase.
 
 ## Testing policy — deliberately minimal
 
@@ -33,19 +32,19 @@ Everything else is verified by running it under load and recording real output. 
 > with k6 and by killing dependencies while traffic was flowing — for a distributed system that
 > tells you more than a mock does."*
 
-## What "demonstrable" means at each phase
+## What is demonstrable at each phase
 
-| After phase | What he can show | CV bullets earned |
-|---|---|---|
-| 0 | The domain model and fold logic, running | — |
-| 1 | A live API taking heartbeats | — |
-| **2** | **Run A collapses, run B holds — the headline result** | **1** |
-| 3 | Durable ingest; survives a broker restart | 1 |
-| 4 | Real schema, indexes, query plans | 1 |
-| **5** | **The complete system, end to end, with read latency** | **2** |
-| **6** | **Redis killed under load, system stays up** | **3** |
-| 7 | Pre-scaling from a schedule, unattended | 3 (bigger numbers) |
-| 8 | Grafana dashboards, the polished demo | 3 (final) |
+| After phase | What can be run and shown |
+|---|---|
+| 0 | The domain model and fold logic, with tests |
+| 1 | A live API accepting heartbeats |
+| **2** | **The headline result: the same load curve, unprotected vs protected** |
+| 3 | Durable ingest; survives a broker restart |
+| 4 | Real schema, indexes, query plans |
+| **5** | **The complete system end to end, with measured read latency** |
+| **6** | **Redis killed under load; the system stays up** |
+| 7 | Pre-scaling from a schedule, unattended |
+| 8 | Grafana dashboards under surge |
 
 ---
 
@@ -54,22 +53,21 @@ Everything else is verified by running it under load and recording real output. 
 **Technology from zero: Java.** No Spring, no Docker, no network. Single files run with
 `java Foo.java` until JUnit forces a build tool.
 
-- [ ] A single runnable `.java` file
-- [ ] `Heartbeat` — the event, as a record
-- [ ] `PlaybackState` — the folded current state
-- [ ] `fold(state, heartbeat) -> state`, including the **anti-rewind rule**: a heartbeat with a
+- [x] A single runnable `.java` file
+- [x] `Heartbeat` — the event, as a record
+- [x] `PlaybackState` — the folded current state
+- [x] `fold(state, heartbeat) -> state`, including the **anti-rewind rule**: a heartbeat with a
       lower `sequence` than the one already applied is ignored. Five lines, no clock algorithm.
-- [ ] An in-memory `Map` store
-- [ ] Gradle wrapper (introduced when JUnit is needed)
-- [ ] **3 tests on the fold** — applies a heartbeat; ignores a stale one; applying twice changes
+- [x] An in-memory `Map` store
+- [x] Gradle wrapper (introduced when JUnit is needed)
+- [x] **3 tests on the fold** — applies a heartbeat; ignores a stale one; applying twice changes
       nothing
-- [ ] `.gitignore`, first commit
+- [x] `.gitignore`, first commit
 
 **Gate**
-- [ ] `./gradlew build` passes
-- [ ] `qbank/00-core-java.md` written; 5 answered aloud, including HashMap internals and the
-      `equals`/`hashCode` contract
-- [ ] Study note written
+- [x] `./gradlew build` passes
+- [x] All three fold tests green, including the one that distinguishes the sequence check from a
+      blind overwrite
 
 ## Phase 1 — Spring Boot and the ingest API · *FR-1, FR-2*
 
@@ -83,8 +81,7 @@ Everything else is verified by running it under load and recording real output. 
 
 **Gate**
 - [ ] `curl` shows 202 valid / 400 with field names invalid
-- [ ] He can explain what autoconfiguration did and why a web server started
-- [ ] `qbank/01-spring.md`; 5 answered aloud
+- [ ] Startup logs show the embedded server bound to a port with no manually-written server code
 
 ## Phase 2 — Load, saturation, and the surge result · *FR-9, NFR-5, NFR-7, D-1, D-3* · **HEADLINE**
 
@@ -103,9 +100,8 @@ any infrastructure exists. Everything after this makes the same result bigger.
 **Gate**
 - [ ] Both runs recorded with real k6 output; the delta is real and explainable
 - [ ] Under overload, playback writes succeed > 99% while browse absorbs the shedding
-- [ ] He can explain token bucket vs leaky bucket, 429 vs 503, and virtual vs platform threads
-- [ ] `qbank/02-concurrency-jvm.md`; 5 answered aloud
-- [ ] **First CV bullet is now true.**
+- [ ] Shed responses carry `429` + `Retry-After`; rejection reason is visible in metrics
+- [ ] The surge result is reproducible on demand.
 
 ## Phase 3 — Kafka · *FR-1, NFR-2, NFR-8*
 
@@ -119,8 +115,7 @@ any infrastructure exists. Everything after this makes the same result bigger.
 
 **Gate**
 - [ ] A heartbeat posted before a broker restart is still processed after it
-- [ ] He can explain the partition key choice and what breaks with a random key
-- [ ] `qbank/03-kafka.md`; 5 answered aloud
+- [ ] One profile's heartbeats are provably confined to a single partition
 
 ## Phase 4 — PostgreSQL · *NFR-8*
 
@@ -136,8 +131,7 @@ any infrastructure exists. Everything after this makes the same result bigger.
 **Gate**
 - [ ] The continue-watching query uses an index scan, proven by a saved plan
 - [ ] Data survives `docker compose down && up`
-- [ ] He can read his own query plan aloud
-- [ ] `qbank/04-postgres.md`; 5 answered aloud
+- [ ] `EXPLAIN ANALYZE` output for the continue-watching query is committed
 
 ## Phase 5 — Redis, cache, and the read path · *FR-3, FR-4, FR-5, NFR-3, NFR-4* · **STOP LINE**
 
@@ -152,10 +146,9 @@ any infrastructure exists. Everything after this makes the same result bigger.
 
 **Gate**
 - [ ] Read p99 recorded; staleness measured
-- [ ] He can explain cache-aside vs write-through, and **why Caffeine rather than hand-writing it**
-- [ ] `qbank/05-redis-caching.md`; 5 answered aloud
+- [ ] Cache hit rate exposed as a runtime metric, not only in a benchmark
 - [ ] `README.md` opens with numbers
-- [ ] **The system is complete end to end. Second CV bullet true. CV-ready — record it.**
+- [ ] **The system is complete end to end and measured.**
 
 ## Phase 6 — Chaos drills · *NFR-9, D-4*
 
@@ -170,8 +163,7 @@ any infrastructure exists. Everything after this makes the same result bigger.
 **Gate**
 - [ ] Three drills run, real terminal output pasted, error rates recorded truthfully
 - [ ] At least one genuine unplanned failure written up
-- [ ] `qbank/06-resilience.md`; 5 answered aloud
-- [ ] **Third CV bullet true.**
+- [ ] Degraded-mode behaviour is documented from real drills, not asserted.
 
 ## Phase 7 — Pre-scaling from a schedule · *FR-7, FR-8, NFR-6, D-2*
 
@@ -186,10 +178,9 @@ story far more cheaply. The k8s version is phase 8, and optional.
 
 **Gate**
 - [ ] A scheduled event raises capacity **before** its start time, with no human action
-- [ ] **He can explain why reactive autoscaling cannot catch a 60-second ramp** — metric delay +
-      scrape interval + stabilisation window + start time, added up. This is the thesis.
+- [ ] The pre-scale lead time is derived from **measured** container start time, and the
+      arithmetic (metric delay + scrape interval + stabilisation window + start time) is recorded
 - [ ] The cost is stated: idle instance-minutes spent buying the headroom
-- [ ] `qbank/07-scaling.md`; 5 answered aloud
 
 ## Phase 8 — Polish · *NFR-11*
 
@@ -203,8 +194,6 @@ Everything here is optional. Do it if there is time; skip it without guilt.
 
 **Gate**
 - [ ] Someone who has never seen the repo can run it from the README alone
-- [ ] He can deliver the demo in SPEC §10 without notes
-- [ ] Full Q-bank pass, aloud, two minutes per answer maximum
 
 ---
 
@@ -214,8 +203,8 @@ Recorded so nobody re-adds them. See [DECISIONS.md](DECISIONS.md) D-012.
 
 | Cut | Why |
 |---|---|
-| Hand-built W-TinyLFU, Count-Min, HyperLogLog, Bloom filter | Invites algorithm questions instead of engineering ones; reinforces an existing strength. Use Caffeine. |
-| Trending / top-K / unique-viewer analytics lane | A whole third lane for one CV bullet. |
+| Hand-built W-TinyLFU, Count-Min, HyperLogLog, Bloom filter | Well-solved library problems; reimplementing adds risk without capability. Use Caffeine (DECISIONS.md D-007). |
+| Trending / top-K / unique-viewer analytics lane | A whole third subsystem for one capability; out of scope (SPEC §3). |
 | Hybrid logical clocks | The anti-rewind *behaviour* is kept as a 5-line `sequence` rule. The clock algorithm is not worth the concept cost. |
 | Property-based testing, Testcontainers, mocks | Testing is minimal by policy — 3 unit tests total. |
 | OpenTelemetry distributed tracing | Prometheus + Grafana is enough to show the result. |
