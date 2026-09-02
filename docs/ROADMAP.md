@@ -106,18 +106,21 @@ any infrastructure exists. Everything after this makes the same result bigger.
 
 - [x] Make the store thread-safe — demonstrate the race first, then fix it
 - [x] Virtual threads for request handling
-- [ ] k6 with a premiere curve: 0 -> saturation in 60 s
-- [ ] **Run A** — no protection. Record where it breaks
-- [ ] Priority tiers (playback write > resume read > browse), token bucket, queue-depth shedding,
-      `429` + `Retry-After`
-- [ ] **Run B** — same curve, protection on
-- [ ] `BENCHMARKS.md` created with the A/B table
+- [x] k6 with a premiere curve: 0 -> saturation in 60 s
+- [x] **Run A** — no protection. Record where it breaks
+- [x] Priority tiers (playback write > resume read > browse), token bucket, queue-depth shedding,
+      `429` + `Retry-After` — write tier only; resume-read/browse don't exist until phase 5
+- [x] **Run B** — same curve, protection on
+- [x] `BENCHMARKS.md` created with the A/B table
 
 **Gate**
-- [ ] Both runs recorded with real k6 output; the delta is real and explainable
-- [ ] Under overload, playback writes succeed > 99% while browse absorbs the shedding
-- [ ] Shed responses carry `429` + `Retry-After`; rejection reason is visible in metrics
-- [ ] The surge result is reproducible on demand.
+- [x] Both runs recorded with real k6 output; the delta is real and explainable
+- [ ] Under overload, playback writes succeed > 99% while browse absorbs the shedding — **cannot
+      be verified yet**: only the write tier exists (resume-read/browse are phase 5). Nothing to
+      absorb shedding *instead of* write. Revisit once phase 5 adds those endpoints.
+- [x] Shed responses carry `429` + `Retry-After`; rejection reason is visible in metrics
+- [x] The surge result is reproducible on demand — Run A and Run B each reproduced twice (20k and
+      50k targets) with consistent, explainable numbers.
 
 ## Phase 3 — Kafka · *FR-1, FR-10, NFR-2, NFR-8*
 

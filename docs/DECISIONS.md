@@ -174,3 +174,43 @@ own load test.
 
 *Rejected:* `synchronized` — correct, but serialises all profiles through one lock regardless of
 whether they conflict.
+
+---
+
+## D-015 · k6 `ramping-arrival-rate`, not `ramping-vus`, for the premiere curve · `SETTLED`
+
+`ramping-vus` controls **concurrency** (how many virtual users are alive) and lets req/s fall out
+of that as a side effect — 1 VU ≈ 1 open connection. For a fast, near-instant write endpoint this
+misrepresents the workload: modelling "5,000 concurrent viewers" as 5,000 permanently-open,
+mostly-idle connections wildly overstates the client resources needed, and on Windows it is the
+client that runs out of ephemeral ports first (confirmed: `ramping-vus` at 20,000 VUs crashed k6
+itself with a socket-exhaustion panic, before the app was meaningfully loaded at all).
+
+`ramping-arrival-rate` targets **requests/sec directly** and reuses a small, capped pool of
+connections (`preAllocatedVUs`/`maxVUs`) across iterations instead of one connection per simulated
+user. Confirmed server-bound, not client-bound, by raising `maxVUs` 1,000 → 3,000 → 6,000 at the
+same target rate: k6 never used more than ~1,450 of them — throughput was capped by the server's
+own processing time, not by available client connections.
+
+*Rejected:* `ramping-vus` — correct tool for modelling genuinely long-lived, mostly-idle
+connections (e.g. websockets), wrong tool for measuring a single fast HTTP endpoint's saturation
+point.
+
+---
+
+## D-016 · App-level shedding only; Tomcat connector limits left untuned · `SETTLED`
+
+Run B exposed a real gap: under the most extreme overload (50,000 req/s target), roughly 2.85%
+of requests were refused at the TCP layer (`connection actively refused`) — Tomcat's connector
+backlog filling before the request ever reaches the token bucket / semaphore. App-level shedding
+cannot intercept a connection that never reaches the app.
+
+**Decision: document this as a known limitation, do not tune Tomcat's connector settings
+(`accept-count`, `max-connections`) to close it.** The mechanism being demonstrated (DIFF-1) is
+application-level admission control — priority tiers, rate limiting, backlog shedding. Connector
+tuning is a real, separate lever, but chasing it goes past what this phase needs to prove and adds
+scope with limited return, given the project's fixed time budget (S-012).
+
+*Rejected:* tuning `server.tomcat.accept-count`/`max-connections` to eliminate the connection
+refusals — would likely narrow the gap, but the headline result (admitted requests stay fast and
+bounded — p99 threshold passes at both 20k and 50k targets) does not depend on it.
