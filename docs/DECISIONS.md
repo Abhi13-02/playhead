@@ -151,3 +151,26 @@ engineering argument — reactive autoscaling cannot catch a fast ramp, so capac
 of a scheduled event — is identical whether the orchestrator is Compose or Kubernetes.
 
 A k3s + HPA deployment is the production-shaped version and remains optional polish.
+
+---
+
+## D-014 · `ConcurrentHashMap.compute`, not `synchronized`, for `Store` · `SETTLED`
+
+`Store.applyHeartbeat` is a read-modify-write on shared state (look up the current
+`PlaybackState`, fold the heartbeat in, save it back) — unsafe under concurrent callers without
+some form of mutual exclusion.
+
+`synchronized` on the whole method was the obvious first fix, but it takes one lock for the
+*entire map*: two threads updating completely unrelated `(profileId, titleId)` pairs would still
+block each other, for no correctness benefit — unrelated profiles never actually conflict.
+
+`ConcurrentHashMap` locks per-key internally. `compute(key, fn)` performs the same
+read-modify-write as one atomic step, but scoped to that key's bucket only — different profiles
+proceed fully in parallel.
+
+Chosen because phase 2 measures throughput under a surge across thousands of *different*
+profiles at once (DIFF-1) — a single coarse lock would visibly cap that number in the project's
+own load test.
+
+*Rejected:* `synchronized` — correct, but serialises all profiles through one lock regardless of
+whether they conflict.

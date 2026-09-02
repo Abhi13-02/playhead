@@ -104,8 +104,8 @@ the system is coherent and demonstrable without them.
 **Technology from zero: JVM concurrency and load testing.** The differentiator lands here, before
 any infrastructure exists. Everything after this makes the same result bigger.
 
-- [ ] Make the store thread-safe — demonstrate the race first, then fix it
-- [ ] Virtual threads for request handling
+- [x] Make the store thread-safe — demonstrate the race first, then fix it
+- [x] Virtual threads for request handling
 - [ ] k6 with a premiere curve: 0 -> saturation in 60 s
 - [ ] **Run A** — no protection. Record where it breaks
 - [ ] Priority tiers (playback write > resume read > browse), token bucket, queue-depth shedding,
