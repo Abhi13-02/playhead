@@ -1,3 +1,5 @@
+package com.playhead;
+
 /**
  * The current, single best-known playback position for one (profile, title) pair.
  *

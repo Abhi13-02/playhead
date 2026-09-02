@@ -1,3 +1,5 @@
+package com.playhead;
+
 /**
  * The lookup key for the playback store: one profile watching one title.
  *

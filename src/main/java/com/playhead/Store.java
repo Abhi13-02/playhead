@@ -1,5 +1,9 @@
+package com.playhead;
+
 import java.util.HashMap;
 import java.util.Map;
+
+import org.springframework.stereotype.Component;
 
 /**
  * Holds one {@link PlaybackState} per (profile, title) pair and applies incoming heartbeats to it.
@@ -10,6 +14,7 @@ import java.util.Map;
  *
  * <p>Not thread-safe. Concurrency is a deliberate later phase, not an accident here.
  */
+@Component
 public class Store {
 
     private final Map<Key, PlaybackState> states = new HashMap<>();

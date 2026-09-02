@@ -1,3 +1,9 @@
+package com.playhead;
+
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.PositiveOrZero;
+
 /**
  * One playback heartbeat: a player telling the backend where it currently is in a title.
  *
@@ -10,12 +16,12 @@
  * ignored, instead of rewinding a viewer who has already moved on.
  */
 public record Heartbeat(
-        String profileId,
-        String titleId,
-        String deviceId,
-        int positionSeconds,
-        int durationSeconds,
+        @NotBlank String profileId,
+        @NotBlank String titleId,
+        @NotBlank String deviceId,
+        @PositiveOrZero int positionSeconds,
+        @Positive int durationSeconds,
         long clientTimestamp,
-        long sequence
+        @PositiveOrZero long sequence
 ) {
 }
