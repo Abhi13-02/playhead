@@ -13,3 +13,18 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+  postgres:
+    image: postgres:16
+    container_name: playhead-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: playhead
+      POSTGRES_USER: playhead
+      POSTGRES_PASSWORD: playhead
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+volumes:
+  postgres-data:

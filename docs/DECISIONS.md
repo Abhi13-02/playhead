@@ -260,3 +260,84 @@ reset consumer group would silently skip all existing data instead of processing
 Set `spring.kafka.consumer.auto-offset-reset: earliest`. Verified for real: reset the consumer
 group's offset to 0, restarted, watched all 4 backlog messages for one profile replay in order
 and rebuild the exact final state.
+
+---
+
+## D-019 · The anti-rewind fold runs in the SQL upsert, not read-modify-write in Java · `SETTLED`
+
+When `fold-consumer` starts writing folded state to the `playback_state` table, the anti-rewind
+rule ("a heartbeat is applied only if its `sequence` is strictly newer") needs a home. Two options:
+
+- **Fold in Java:** read the current row, call `Fold.fold(current, heartbeat)`, write the result
+  back. One definition of the rule, already unit-tested — but a read-modify-write across the
+  network, and racy: during a Kafka consumer-group rebalance the same profile's partition can
+  briefly be processed by two consumers, and two read-modify-writes can clobber each other. Same
+  TOCTOU problem as D-014, moved from a `HashMap` to a table.
+- **Fold in SQL:** `INSERT ... ON CONFLICT (profile_id, title_id) DO UPDATE SET ... WHERE
+  excluded.sequence > playback_state.sequence`. One atomic statement, one round trip. Postgres
+  takes a row lock on the primary key, so concurrent upserts on the same `(profile_id, title_id)`
+  are serialised by the database.
+
+**Chosen: fold in SQL**, for the same reason as D-014 — prefer one atomic operation over
+read-modify-write, and let the storage engine serialise concurrent writers on a key.
+
+`Fold.java` is *not* removed: it stays as the readable, unit-tested statement of the rule and is
+reused on the Redis write path in phase 5. The rule is therefore expressed twice (the `Fold`
+`sequence` check and the SQL `WHERE`); the duplication is one comparison and is accepted, with a
+cross-referencing comment in each place.
+
+*Consequence:* the in-memory `Store` (`ConcurrentHashMap`, D-014) retires once `fold-consumer`
+writes durably — Postgres becomes the store of record, Redis the hot cache (phase 5).
+
+*Rejected:* fold in Java against the DB — correct in the single-consumer case, but reintroduces
+the D-014 race across a network round trip, for no benefit.
+
+---
+
+## D-020 · `JdbcClient` for Postgres access, not JPA/Hibernate · `SETTLED`
+
+`fold-consumer` (and later `read-api`) needs a data-access layer. Spring offers a ladder: raw
+JDBC → `JdbcClient` (thin fluent wrapper, hand-written SQL) → Spring Data JDBC → JPA/Hibernate
+(full ORM).
+
+**Chosen: `JdbcClient`.**
+
+- The write path is a hand-written `INSERT ... ON CONFLICT (profile_id, title_id) DO UPDATE ...
+  WHERE excluded.sequence > playback_state.sequence` upsert — Postgres-specific SQL an ORM cannot
+  express without dropping to a native-query string anyway.
+- The reads are two simple queries (one PK lookup, one indexed sorted query with `LIMIT`).
+- Phase 4's learning goal is reading the SQL and its `EXPLAIN ANALYZE` plan. `JdbcClient` keeps
+  the SQL in the code identical to the SQL that runs; an ORM hides it.
+- SPEC §9 mandates a deliberately thin Spring. Hibernate brings a persistence context, flush
+  timing, lazy loading and N+1 surprises — concept load with no benefit on this workload.
+
+*Rejected:* JPA/Hibernate (hides SQL, heavy, needs a native query for the upsert regardless);
+`JdbcTemplate` (older, more boilerplate — `JdbcClient` supersedes it); raw JDBC (manual resource
+and result-set handling for no gain over `JdbcClient`).
+
+---
+
+## D-021 · The service runs in UTC (`-Duser.timezone=UTC`) · `SETTLED`
+
+Bringing up the Postgres datasource, the JDBC connection was refused:
+`FATAL: invalid value for parameter "TimeZone": "Asia/Calcutta"`. The pgjdbc driver sends the
+JVM's default zone to Postgres on connect; this Windows JVM reports the legacy 1980s name
+`Asia/Calcutta`, which Postgres 16's tzdata no longer recognises (only `Asia/Kolkata`).
+
+**Decision: run the JVM in UTC** — `bootRun { jvmArgs('-Duser.timezone=UTC') }`, and the same in
+the container image later. This is standard practice for a backend service: DB session, logs, and
+every stored `timestamptz` agree on one canonical zone, and display-time localisation is a
+client-side concern. The stale-zone-name quirk just forced the decision earlier than it would
+otherwise have come up.
+
+*Rejected:* `-Duser.timezone=Asia/Kolkata` — fixes the connection error with the canonical name
+but leaves the service running in local time, which is the thing you don't want in a system whose
+whole job is ordering timestamped events.
+
+**Related environment finding (not a decision):** Spring Boot 4 split autoconfiguration into
+per-technology modules. Flyway's autoconfiguration is no longer in `spring-boot-autoconfigure` —
+it lives in a dedicated `org.springframework.boot:spring-boot-flyway` module, which `flyway-core`
+alone does not pull in. Symptom: Flyway silently does not run, no log lines, no
+`flyway_schema_history` table. Same class of Boot-4 modularisation gotcha as
+`spring-boot-starter-kafka` in D-017. Fixed by depending on `spring-boot-flyway` (it brings
+`flyway-core` transitively).

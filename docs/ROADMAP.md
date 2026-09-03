@@ -89,11 +89,11 @@ the system is coherent and demonstrable without them.
 
 **Technology from zero: Spring Boot**, kept deliberately thin.
 
-- [ ] `ingest-api` module
-- [ ] `POST /v1/playback/heartbeat` -> `202`
-- [ ] Validation; `400` naming every failed field
-- [ ] `@ControllerAdvice` error handling
-- [ ] Actuator health
+- [x] `ingest-api` module
+- [x] `POST /v1/playback/heartbeat` -> `202`
+- [x] Validation; `400` naming every failed field
+- [x] `@ControllerAdvice` error handling
+- [x] Actuator health
 
 **Gate**
 - [x] `curl` shows 202 valid / 400 with field names invalid
@@ -126,11 +126,11 @@ any infrastructure exists. Everything after this makes the same result bigger.
 
 **Technology from zero: Kafka.** First container.
 
-- [ ] `docker-compose.yml` with Kafka (KRaft)
-- [ ] `ingest-api` publishes instead of storing in memory
-- [ ] Topic design: partitions, key = `profileId`
-- [ ] `fold-consumer` module
-- [ ] Manual offset commit
+- [x] `docker-compose.yml` with Kafka (KRaft)
+- [x] `ingest-api` publishes instead of storing in memory
+- [x] Topic design: partitions, key = `profileId`
+- [x] `fold-consumer` module
+- [x] Manual offset commit
 
 **Gate**
 - [x] A heartbeat posted before a broker restart is still processed after it
@@ -142,17 +142,17 @@ any infrastructure exists. Everything after this makes the same result bigger.
 
 **Technology from zero: Postgres and real SQL.**
 
-- [ ] Postgres in Compose
-- [ ] Events table (partitioned) and current-state table
-- [ ] Covering index for continue-watching
-- [ ] `fold-consumer` writes durably
-- [ ] Connection pool sized deliberately
-- [ ] `EXPLAIN ANALYZE` output saved
+- [x] Postgres in Compose
+- [x] Events table (partitioned) and current-state table
+- [x] Covering index for continue-watching
+- [x] `fold-consumer` writes durably
+- [x] Connection pool sized deliberately — HikariCP `maximum-pool-size: 10`
+- [x] `EXPLAIN ANALYZE` output saved — [query-plans.md](query-plans.md)
 
 **Gate**
-- [ ] The continue-watching query uses an index scan, proven by a saved plan
-- [ ] Data survives `docker compose down && up`
-- [ ] `EXPLAIN ANALYZE` output for the continue-watching query is committed
+- [x] The continue-watching query uses an index scan, proven by a saved plan
+- [x] Data survives `docker compose down && up` — 205,000 rows before and after
+- [x] `EXPLAIN ANALYZE` output for the continue-watching query is committed
 
 ## Phase 5 — Redis, cache, and the read path · *FR-3, FR-4, FR-5, NFR-3, NFR-4*
 
