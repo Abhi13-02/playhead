@@ -2,3 +2,15 @@ spring:
   threads:
     virtual:
       enabled: true
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      value-serializer: org.springframework.kafka.support.serializer.JacksonJsonSerializer
+    consumer:
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      value-deserializer: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.playhead
+    listener:
+      ack-mode: manual

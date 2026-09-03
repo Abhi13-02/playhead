@@ -214,3 +214,49 @@ scope with limited return, given the project's fixed time budget (S-012).
 *Rejected:* tuning `server.tomcat.accept-count`/`max-connections` to eliminate the connection
 refusals — would likely narrow the gap, but the headline result (admitted requests stay fast and
 bounded — p99 threshold passes at both 20k and 50k targets) does not depend on it.
+
+---
+
+## D-017 · `JacksonJsonSerializer` for Kafka message values, not the legacy `JsonSerializer` · `SETTLED`
+
+Spring Boot 4.1.1 ships **Jackson 3** (new `tools.jackson.*` packages/coordinates, a genuine
+recent ecosystem migration) as its default JSON library. `spring-kafka`'s legacy `JsonSerializer`
+is built against Jackson 2's classes (`com.fasterxml.jackson.databind.JavaType`) — the two don't
+coexist, confirmed by a real `NoClassDefFoundError` at publish time.
+
+**First fix tried (and reverted): manual JSON-string serialization.** Serialize `Heartbeat` to a
+string by hand (via the autoconfigured Jackson 3 `ObjectMapper`) and publish with plain
+`StringSerializer`, sidestepping the clash entirely. This *worked* and was verified end-to-end —
+but it was a workaround chosen without first checking for a proper fix, built and only labelled
+as a workaround after the fact. Corrected per his direct feedback (2026-09-03,
+`WORKING_AGREEMENT.md`): workarounds get flagged and discussed *before* being built, not after.
+
+**Actual fix, on checking:** `spring-kafka-4.1.1.jar` ships **both** a legacy `JsonSerializer`
+(Jackson 2) and a Jackson-3-native `JacksonJsonSerializer`, side by side — confirmed by listing
+the jar's contents. Using `JacksonJsonSerializer` as the producer's `value-serializer` is the
+real, convention-matching fix: `IngestController` sends the `Heartbeat` object directly again, no
+manual `ObjectMapper` call, no `StringSerializer`.
+
+*Rejected:* the manual JSON-string route (works, but skips a genuine one-step serializer that
+exists for exactly this case) and adding classic Jackson 2 (`com.fasterxml.jackson.core`)
+alongside Jackson 3 (would resolve `JsonSerializer` too, but leaves two Jackson major versions on
+the classpath indefinitely, for no benefit over `JacksonJsonSerializer`).
+
+**Related environment finding, not itself a decision but worth recording:** Spring Boot 4.1.1 also
+moved Kafka autoconfiguration out of the core `spring-boot-autoconfigure` module into a new,
+separate `spring-boot-starter-kafka` artifact — `spring-kafka` alone is not enough to get an
+autoconfigured `KafkaTemplate` bean on this version. Every Boot 3.x-era tutorial online misses this
+(`WORKING_AGREEMENT.md` already flags Boot 3.x examples as unreliable for this project generally).
+
+---
+
+## D-018 · `auto-offset-reset: earliest` for `fold-consumer` · `SETTLED`
+
+Found running the Replay gate test: Kafka's client default for a consumer group with no committed
+offset is `latest` — skip straight to the newest message, ignore everything before. For a system
+built around replaying history (FR-10) and surviving crashes, that default is wrong: a fresh or
+reset consumer group would silently skip all existing data instead of processing it.
+
+Set `spring.kafka.consumer.auto-offset-reset: earliest`. Verified for real: reset the consumer
+group's offset to 0, restarted, watched all 4 backlog messages for one profile replay in order
+and rebuild the exact final state.

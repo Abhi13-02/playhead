@@ -96,8 +96,8 @@ the system is coherent and demonstrable without them.
 - [ ] Actuator health
 
 **Gate**
-- [ ] `curl` shows 202 valid / 400 with field names invalid
-- [ ] Startup logs show the embedded server bound to a port with no manually-written server code
+- [x] `curl` shows 202 valid / 400 with field names invalid
+- [x] Startup logs show the embedded server bound to a port with no manually-written server code
 
 ## Phase 2 — Load, saturation, and the surge result · *FR-9, NFR-5, NFR-7, DIFF-1, DIFF-3* · **HEADLINE**
 
@@ -133,9 +133,9 @@ any infrastructure exists. Everything after this makes the same result bigger.
 - [ ] Manual offset commit
 
 **Gate**
-- [ ] A heartbeat posted before a broker restart is still processed after it
-- [ ] One profile's heartbeats are provably confined to a single partition
-- [ ] **Replay (FR-10):** consuming the topic from offset 0 into an empty store reproduces
+- [x] A heartbeat posted before a broker restart is still processed after it
+- [x] One profile's heartbeats are provably confined to a single partition
+- [x] **Replay (FR-10):** consuming the topic from offset 0 into an empty store reproduces
       byte-identical state — the fold's sequence check makes this free
 
 ## Phase 4 — PostgreSQL · *NFR-8*
