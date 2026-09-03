@@ -1,4 +1,4 @@
-package com.playhead;
+package com.playhead.domain;
 
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Positive;

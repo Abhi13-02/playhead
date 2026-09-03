@@ -1,4 +1,4 @@
-package com.playhead;
+package com.playhead.domain;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 

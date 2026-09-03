@@ -1,4 +1,4 @@
-package com.playhead;
+package com.playhead.web;
 
 import java.util.HashMap;
 import java.util.Map;

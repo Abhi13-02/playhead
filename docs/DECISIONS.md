@@ -341,3 +341,158 @@ alone does not pull in. Symptom: Flyway silently does not run, no log lines, no
 `flyway_schema_history` table. Same class of Boot-4 modularisation gotcha as
 `spring-boot-starter-kafka` in D-017. Fixed by depending on `spring-boot-flyway` (it brings
 `flyway-core` transitively).
+
+---
+
+## D-022 · The Redis mirror write is post-transaction and best-effort · `SETTLED`
+
+`FoldConsumer` writes each fold to Postgres (two statements, one transaction) and then mirrors
+the new `playback_state` into Redis under `state:{profileId}:{titleId}` with a 1-hour TTL.
+
+**The Redis write is deliberately outside the transaction and its failure is swallowed:**
+
+- Redis is not transactional; a `SET` cannot be rolled back with the database transaction. Doing
+  it before commit risks Redis holding a value the database then rejected.
+- It runs only when the state upsert actually changed a row (`stateRowsApplied > 0`). A stale or
+  duplicate heartbeat that the anti-rewind `WHERE` clause rejected must not overwrite a fresher
+  cached value — the same D-019 rule, applied to the cache.
+- A Redis failure is logged, not rethrown, and the Kafka message is still acknowledged. Failing
+  the message would redeliver it and re-run the Postgres writes for nothing. A missed mirror
+  self-heals: the next heartbeat for that key rewrites it, or a cache-aside read reloads it from
+  Postgres, and the TTL bounds how long any stale entry can live.
+
+Net: the cache can lag Postgres, never lead it. Postgres is the source of truth; Redis is a
+disposable accelerator.
+
+*Honest limitation:* the mirror write sits at the end of the `@Transactional` method, so it is
+still technically inside the transaction window (the proxy commits on method return). A strictly
+correct version uses an after-commit hook (`TransactionSynchronization.afterCommit`); judged not
+worth the complexity for a TTL'd cache-aside cache whose staleness is already bounded. Recorded
+here rather than left undocumented.
+
+## D-023 · Read list (continue-watching) is served from Postgres, not a Redis structure · `SETTLED`
+
+`resume` (point lookup by `(profileId, titleId)`) goes through Redis cache-aside.
+`continue-watching` (a profile's in-progress titles, newest first, paginated, filtered by the
+95% completion rule) is served straight from Postgres via the `idx_continue_watching` covering
+index — **not** mirrored into a Redis sorted set.
+
+- The query is a sorted, filtered, paginated range — what a B-tree index is for. Phase 4 measured
+  it at ~0.09 ms with no sort step.
+- A Redis ZSET equivalent would need a write on every heartbeat to a per-profile structure, an
+  explicit removal when a title crosses 95%, and a batch rebuild after any Redis restart (no lazy
+  reload path like cache-aside has). Three consistency problems for latency the index scan does
+  not cost.
+- Rule of thumb applied: point-lookup-by-key → cache in Redis; query an index already serves →
+  leave it in Postgres.
+
+## D-024 · Package layout: flat now, package-by-layer after phase 5 · `SETTLED`
+
+All classes currently sit in the single `com.playhead` package. This is fine at ~11 files and is
+how Spring Boot guides start, but does not scale.
+
+**Decision: refactor to package-by-layer** once the phase-5 read path is complete, as one
+mechanical repackaging step before the phase-5 commit:
+
+```
+com.playhead
+├── controller   IngestController, ReadController
+├── service      PlaybackReadService, TokenBucket
+├── consumer     FoldConsumer
+├── config       CaffeineConfig
+├── domain       Heartbeat, PlaybackState, Fold
+└── web          ValidationExceptionHandler
+```
+
+Package-by-layer is the conventional Spring Boot layout and the one most reviewers expect to
+see; the codebase is small enough (one bounded domain, ~11 classes) that by-layer's usual
+drawback — one feature's code scattered across several folders — does not bite. Spring's
+component scan finds `@Component`/`@Service`/`@RestController`/`@Configuration` in any
+sub-package under the application class, so no wiring changes are needed.
+
+*Rejected:* package-by-feature (`ingest`, `fold`, `read`, `domain`). It keeps a feature's code
+together and ages better in a large codebase, but this project has one small domain and a
+by-layer tree communicates the request→service→data structure at a glance.
+
+---
+
+## D-025 · Redis is best-effort on the read path; command timeout 50 ms · `SETTLED`
+
+The first three-tier read path had a hard dependency on Redis by accident: `resume` called
+`redis.opsForValue().get(...)` with no error handling, so with Redis stopped the endpoint
+returned `500` instead of falling through to Postgres. Cache-aside is only cache-aside if the
+cache being unavailable is survivable.
+
+**Two changes:**
+
+1. **Redis reads and writes are wrapped and swallowed.** A failure is logged at WARN and treated
+   as a cache miss; the request continues to Postgres. Measured: with Redis stopped the endpoint
+   went from `500` to `200`.
+
+2. **`spring.data.redis.timeout: 50ms`.** Lettuce's default command timeout is ~60 s, so the
+   fallback in (1) only fired after the request had already hung for ~78 s — a correct answer at
+   an unusable latency.
+
+**Why 50 ms and not 10 ms.** The timeout is derived from the latency budget (NFR-3: read
+p99 < 50 ms) and cross-checked against normal Redis latency (sub-millisecond), not guessed. A
+very tight timeout produces **false positives** — a JVM GC pause, Redis's single thread blocked
+behind another client's slow command, an RDB/AOF background fork, network jitter, or container
+CPU throttling all cause legitimate multi-millisecond spikes. Those spikes cluster under load,
+which is when a false timeout is most damaging: the cache is bypassed exactly when it is needed,
+the full read load lands on Postgres, and the system can fail metastably — unable to recover even
+after the original trigger passes.
+
+**Measured result:** Redis up, `GET /v1/playback/resume/{titleId}` completes in ~14 ms. Redis
+stopped, the same call completes in ~112–119 ms (the 50 ms command timeout plus connection-attempt
+overhead), down from ~78,000 ms.
+
+**Known limitation, and the justification for phase 6.** ~112 ms still exceeds the NFR-3 budget,
+and a timeout has no memory — with Redis down, every request pays the wait on a dependency already
+known to be gone. A **circuit breaker** is the correct tool for a dead dependency: after N
+consecutive failures it stops calling Redis entirely (0 ms fallback), and a half-open probe
+restores service automatically. That is ROADMAP phase 6 work, and this measurement — not a
+general principle — is what justifies it. The 50 ms value is a defensible starting point to be
+validated against the phase-5 k6 read profile and revised here if the data disagrees.
+
+---
+
+## D-026 · The consumer ignores the producer's type header · `SETTLED`
+
+Moving `Heartbeat` from `com.playhead` to `com.playhead.domain` during the package refactor
+(D-024) broke the fold-consumer at runtime while the build stayed green:
+
+```
+The class 'com.playhead.domain.Heartbeat' is not in the trusted packages:
+  [java.util, java.lang, com.playhead]
+```
+
+`spring.json.trusted.packages` matches a package **exactly**, not as a prefix, and it lives in a
+YAML string the compiler never sees. The consumer then retried the same unreadable record in a
+tight loop until the JVM's garbage collector thrashed and the Gradle daemon was killed.
+
+Two distinct faults were involved:
+
+1. The moved class was no longer in the trusted list.
+2. Records already on the topic carry a type header naming `com.playhead.Heartbeat`, a class that
+   no longer exists — so even a corrected trust list would fail those with `ClassNotFound`.
+
+**Decision: turn type headers off and name the type explicitly.**
+
+```yaml
+spring.json.use.type.headers: false
+spring.json.value.default.type: com.playhead.domain.Heartbeat
+```
+
+The `heartbeats` topic carries exactly one message type, so there is nothing for a type header to
+disambiguate. Deserializing directly to a named class decouples the consumer from the producer's
+class name and package — the coupling that caused this failure — and removes the need for
+`trusted.packages`, which exists only to make type headers safe to honour.
+
+*Rejected:* widening the trust list to `com.playhead.*` — fixes fault 1 but not fault 2, and
+leaves the consumer coupled to the producer's class naming. Wiping the topic — hides the problem
+rather than fixing it, and would not be available in production.
+
+**Operational note:** a poison-pill record blocks a partition indefinitely and the retry loop is
+hot, not idle. The consumer has no `ErrorHandlingDeserializer` or dead-letter topic, so any record
+it cannot deserialize still halts that partition. Left as a known gap for the phase-6 drills
+rather than fixed speculatively.

@@ -115,9 +115,12 @@ any infrastructure exists. Everything after this makes the same result bigger.
 
 **Gate**
 - [x] Both runs recorded with real k6 output; the delta is real and explainable
-- [ ] Under overload, playback writes succeed > 99% while browse absorbs the shedding — **cannot
-      be verified yet**: only the write tier exists (resume-read/browse are phase 5). Nothing to
-      absorb shedding *instead of* write. Revisit once phase 5 adds those endpoints.
+- [ ] Under overload, playback writes succeed > 99% while browse absorbs the shedding — **still
+      not verified.** Phase 5 added the read endpoints, but they are **not wired into admission
+      control**: the token bucket and in-flight limiter apply to the write path only, so there is
+      still no lower-priority tier being shed *instead of* writes. Verifying this needs the read
+      endpoints placed behind their own (lower) priority tier — carry to phase 6 or later, and do
+      not tick it until a run shows writes > 99% while reads absorb the shedding.
 - [x] Shed responses carry `429` + `Retry-After`; rejection reason is visible in metrics
 - [x] The surge result is reproducible on demand — Run A and Run B each reproduced twice (20k and
       50k targets) with consistent, explainable numbers.
@@ -158,18 +161,21 @@ any infrastructure exists. Everything after this makes the same result bigger.
 
 **Technology from zero: Redis and caching strategy.**
 
-- [ ] Redis in Compose; fold writes hot state
-- [ ] `read-api` module
-- [ ] `GET /v1/playback/resume/{titleId}`, `GET /v1/playback/continue-watching`
-- [ ] Completion threshold removes a title
-- [ ] **Caffeine** cache, cache-aside, hit-rate metric
-- [ ] k6 read profile; p50/p95/p99 recorded
+- [x] Redis in Compose; fold writes hot state
+- [x] `read-api` module — `ReadController` (HTTP) + `PlaybackReadService` (caching and SQL)
+- [x] `GET /v1/playback/resume/{titleId}`, `GET /v1/playback/continue-watching`
+- [x] Completion threshold removes a title — computed in the query, not stored (D-023)
+- [x] **Caffeine** cache, cache-aside, hit-rate metric
+- [x] k6 read profile; p50/p95/p99 recorded — [`load/reads.js`](../load/reads.js)
 
 **Gate**
-- [ ] Read p99 recorded; staleness measured
-- [ ] Cache hit rate exposed as a runtime metric, not only in a benchmark
-- [ ] `README.md` opens with numbers
-- [ ] **The system is complete end to end and measured.**
+- [x] Read p99 recorded; staleness measured — `resume` p99 **6.57 ms**, `continue-watching` p95
+      **3.12 ms** (target < 50 ms); write-to-read visibility **≤ 138 ms** (budget 2 s)
+- [x] Cache hit rate exposed as a runtime metric, not only in a benchmark —
+      `/actuator/metrics/cache.gets`, tagged by cache and `result:hit|miss`. Measured **8.3%**
+      (`resume`) vs **64.3%** (`continue-watching`)
+- [x] `README.md` opens with numbers
+- [x] **The system is complete end to end and measured.**
 
 ## Phase 6 — Chaos drills · *NFR-9, DIFF-4, DIFF-5* · **END OF CORE SCOPE**
 

@@ -29,6 +29,42 @@ a hard ceiling on how slow a served request can get.**
 
 ---
 
+## The read path, measured
+
+122,207 requests against the same curve shape, ramping to 2,000 req/s. **0.00% failed.**
+
+| Endpoint | median | p95 | **p99** |
+|---|---|---|---|
+| `GET /resume/{titleId}` | 1.57 ms | 3.69 ms | **6.57 ms** |
+| `GET /continue-watching` | 0.54 ms | 3.12 ms | — |
+
+Target was p99 < 50 ms. Met with roughly 7× headroom, using 25 of 800 available load-generator
+connections and **one** of ten database connections — the read path was never the constraint.
+
+**Write-to-read visibility: ≤ 138 ms** end to end (HTTP → Kafka → fold → Postgres + Redis →
+readable), against a 2-second budget.
+
+### The cache result worth reading
+
+Hit rates come from `/actuator/metrics/cache.gets` at runtime, not from a spreadsheet.
+
+| Local cache | Hit rate | Distinct keys |
+|---|---|---|
+| `resume` | **8.3%** | 25,000 |
+| `continue-watching` | **64.3%** | 500 |
+
+**A 7.7× difference between two endpoints in the same service, caused entirely by key
+cardinality.** `resume` is keyed `(profileId, titleId)` and each viewer reads their own resume
+point roughly once per session — a premiere produces a million *different* keys, not one hot key.
+`continue-watching` is keyed on `profileId` alone and is re-fetched on every app open.
+
+The honest conclusion: **the local cache barely earns its place in front of `resume`.** What
+delivers that endpoint's 6.57 ms p99 is Redis, not Caffeine. This is recorded rather than
+smoothed over, because "we added a cache and it got faster" is the claim that usually goes
+unchecked.
+
+---
+
 ## What it does
 
 A player emits a heartbeat roughly every ten seconds while something is playing — *this profile is
@@ -36,8 +72,9 @@ at this position in this title*. At 100,000 concurrent streams that is ~10,000 w
 them updates to the same row per viewer.
 
 ```
-WRITE   player --heartbeat/10s--> ingest-api --> Kafka --> fold-consumer --> state
-READ    client --> read-api --> cache --> Redis --> Postgres          (phase 5)
+WRITE   player --heartbeat/10s--> ingest-api --> Kafka --> fold-consumer --> Postgres + Redis
+READ    resume            client --> read-api --> Caffeine --> Redis --> Postgres
+        continue-watching client --> read-api --> Caffeine --> Postgres (covering index)
 GUARD   token bucket + in-flight limit --> 429 + Retry-After
 ```
 
@@ -68,8 +105,8 @@ All three are verified, not asserted. Replay was tested by resetting the consume
 | 1 | Spring Boot ingest API, validation, error handling, health | Complete |
 | 2 | Load testing, priority-tiered admission control, **the surge A/B** | Complete |
 | 3 | Kafka — producer, partitioning, consumer group, manual offset commit | Complete |
-| 4 | PostgreSQL — schema, indexes, durable fold | Not started |
-| 5 | Redis, read path, Caffeine cache | Not started |
+| 4 | PostgreSQL — partitioned events table, covering index, durable fold | Complete |
+| 5 | Redis, read path, Caffeine cache, read benchmarks | Complete |
 | 6 | Chaos drills — kill dependencies under load | Not started |
 
 Detailed scope and exit criteria: [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -81,8 +118,8 @@ Detailed scope and exit criteria: [docs/ROADMAP.md](docs/ROADMAP.md).
 Requires Docker and JDK 25.
 
 ```bash
-docker compose up -d          # Kafka (KRaft mode, no Zookeeper)
-./gradlew bootRun             # starts on :8080
+docker compose up -d          # Kafka (KRaft), PostgreSQL 16, Redis 7
+./gradlew bootRun             # starts on :8080, Flyway applies the schema
 ```
 
 Post a heartbeat:
@@ -104,15 +141,34 @@ docker exec playhead-kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --from-beginning --property print.key=true
 ```
 
-### Reproducing the surge result
+Read it back:
 
 ```bash
-PEAK=50000 k6 run load/premiere.js
+curl -H "X-Profile-Id: p-1" http://localhost:8080/v1/playback/resume/t-1
+# -> {"profileId":"p-1","titleId":"t-1","positionSeconds":42,...}
+
+curl -H "X-Profile-Id: p-1" "http://localhost:8080/v1/playback/continue-watching?page=0&size=20"
+# -> [ ... in-progress titles, newest first, anything past 95% excluded ]
 ```
 
-The script ramps from 50 to `PEAK` requests/sec over 60 seconds, then holds. It reports the split
-between served requests (`202`), deliberately shed requests (`429`), and genuine failures
+Cache hit rates, live:
+
+```bash
+curl "http://localhost:8080/actuator/metrics/cache.gets?tag=cache:resume&tag=result:hit"
+```
+
+### Reproducing the benchmarks
+
+```bash
+PEAK=50000 k6 run load/premiere.js   # the surge A/B (write path)
+PEAK=2000  k6 run load/reads.js      # the read path
+```
+
+Both ramp from 50 to `PEAK` requests/sec over 60 seconds, then hold. `premiere.js` reports the
+split between served requests (`202`), deliberately shed requests (`429`), and genuine failures
 separately — necessary, because a load generator counts a correct `429` as a failure by default.
+`reads.js` tracks each endpoint's latency as its own metric, so a point lookup and an indexed list
+are never blended into one misleading percentile.
 
 ---
 
@@ -129,8 +185,19 @@ Full log with rejected alternatives: [docs/DECISIONS.md](docs/DECISIONS.md).
   solved architecturally instead of with a lock.
 - **Manual offset commit** — the offset advances only after a heartbeat is folded. A crash between
   the two causes redelivery, which the fold's sequence check makes harmless.
-- **Caffeine, not a hand-written cache** (phase 5) — it *is* W-TinyLFU, implemented by the people
-  who published the paper.
+- **Caffeine, not a hand-written cache** — it *is* W-TinyLFU, implemented by the people who
+  published the paper.
+- **The fold runs inside the SQL upsert**, not as read-modify-write in Java. `INSERT ... ON
+  CONFLICT ... WHERE excluded.sequence > playback_state.sequence` is one atomic statement, so
+  Postgres row-locks the key and concurrent consumers cannot clobber each other — no application
+  locking (D-019).
+- **`continue-watching` is served from Postgres, not Redis** — it is a sorted, filtered, paginated
+  list, which a covering index already answers in ~0.09 ms. A Redis copy would need invalidating on
+  every heartbeat, for latency the index does not cost (D-023).
+- **"Completed" is computed, not stored** — a title past 95% is excluded by the query's `WHERE`
+  clause. No `completed` column to keep in sync, and `resume` still answers for a finished title.
+- **Redis is best-effort on the read path** — a failed Redis call is logged and treated as a cache
+  miss, so an outage degrades to Postgres rather than returning `500` (D-025).
 
 ---
 
@@ -142,8 +209,20 @@ Full log with rejected alternatives: [docs/DECISIONS.md](docs/DECISIONS.md).
   Left untuned deliberately; see D-016.
 - A Kafka publish has no explicit timeout configured, so a broker outage causes a write request to
   hang for roughly 60 seconds before failing, rather than failing fast.
-- Priority tiers are designed for three classes of traffic (playback write > resume read > browse),
-  but only the write tier exists until phase 5 builds the read path.
+- Priority tiers are designed for three classes of traffic (playback write > resume read > browse).
+  The read endpoints now exist but are **not yet wired into admission control**, so the shedding
+  fairness claim in NFR-7 remains unverified.
+- **With Redis down, a read costs ~112 ms** — the 50 ms command timeout plus connection-attempt
+  overhead. It succeeds (falling back to Postgres) but exceeds the 50 ms p99 budget. A per-request
+  timeout has no memory: every request pays the wait on a dependency already known to be gone.
+  A circuit breaker is the fix, and this measurement is what justifies it (D-025).
+- **The read benchmark does not find the read path's ceiling.** At 2,000 req/s the server used 25
+  of 800 connections and one of ten in the database pool. The recorded figure is latency at a
+  realistic read rate, not a saturation point.
+- **Kafka consumer rebalance after a restart takes ~60 s**, during which the fold-consumer
+  processes nothing. Writes are still accepted and buffered in Kafka, but reads serve stale state
+  for that window. Found while measuring staleness, where it initially produced 15-second results
+  that had nothing to do with read latency.
 
 ---
 

@@ -144,3 +144,157 @@ http_req_duration..: avg=3.15ms min=0s med=963.5µs max=1.02s p(90)=5.52ms p(95)
   { expected_response:true }...: avg=2.53ms p(90)=3.51ms p(95)=8.9ms
 http_reqs..........: 1079771  10283.049354/s
 ```
+
+---
+
+# Phase 5 — the read path
+
+*Recorded 2026-09-04. Script: [`load/reads.js`](../load/reads.js). Same curve shape as the
+write run (15 s calm, 60 s ramp, 30 s hold) so the two are comparable.*
+
+## Setup
+
+| | |
+|---|---|
+| Curve | 0 → **2,000 req/s** over 60 s, then hold 30 s |
+| Mix | 70% `GET /v1/playback/resume/{titleId}`, 30% `GET /v1/playback/continue-watching` |
+| Key space | 500 profiles × 50 titles = **25,000** `(profile, title)` pairs, all seeded |
+| Caffeine | 2 s TTL, max 10,000 entries, per endpoint |
+| Redis | warm from the write path at start (14,289 keys), 24,889 at end |
+| Starting state | app restarted (Caffeine cold), Postgres fully seeded |
+
+## Result — NFR-3 met with headroom
+
+**NFR-3: read p99 < 50 ms.**
+
+| Endpoint | med | p90 | p95 | **p99** | max |
+|---|---|---|---|---|---|
+| `resume` | 1.57 ms | 3.12 ms | 3.69 ms | **6.57 ms** ✓ | 58.92 ms |
+| `continue-watching` | 0.54 ms | 2.65 ms | 3.12 ms | — ✓ | 48.32 ms |
+
+- 122,207 requests, **0.00% failed**.
+- Peak concurrency: **25 VUs** of 800 pre-allocated — the read path never approached saturation.
+- HikariCP used **1** of its 10 connections. Postgres was not the constraint.
+
+Percentiles are tracked per endpoint on purpose. Blending a point lookup and an indexed list into
+one number would hide which tier is slow.
+
+## Cache hit rate — the interesting result
+
+Read live from `/actuator/metrics/cache.gets`, not computed offline.
+
+| Cache | Hits | Misses | **Hit rate** | Distinct keys |
+|---|---|---|---|---|
+| `resume` | 7,069 | 78,197 | **8.3%** | 25,000 |
+| `continue-watching` | 23,769 | 13,172 | **64.3%** | 500 |
+
+**A 7.7× difference between two endpoints in the same service, explained entirely by key
+cardinality.**
+
+- `resume` is keyed `(profileId, titleId)`. A viewer reads their resume point roughly *once* per
+  playback session, and a premiere means a million *different* keys, not one hot key. With 25,000
+  keys and a 2 s TTL, almost every lookup misses. **The local cache barely earns its place on this
+  endpoint** — the honest conclusion, and the opposite of the usual "add a cache, it gets faster"
+  assumption.
+- `continue-watching` is keyed on `profileId` alone — 500 keys — and is re-fetched every time a
+  client opens or navigates the app. Heavy reuse, and the hit rate shows it.
+
+**What actually delivers `resume`'s 6.57 ms p99 is Redis, not Caffeine.** Caffeine's contribution
+there is limited to bursts clustered inside its 2 s window (client retries, a household opening the
+same title on a second device).
+
+## Honest notes
+
+- **The 2 s Caffeine TTL is aggressive** and is what caps the `resume` hit rate. It was chosen to
+  stay inside NFR-4's 2 s staleness bound, not tuned for hit rate. Raising it would trade
+  freshness for hits; the bound is the binding constraint, so it stays.
+- **This run does not find the read path's ceiling.** At 2,000 req/s the server used 25 of 800
+  VUs and one database connection. The number recorded here is *latency at a realistic read rate*,
+  which is what NFR-3 asks for — not a saturation point. The write path saturated at
+  ~10,000–13,000 req/s; the read path was not pushed that far.
+- **k6's check counts read oddly** for the same reason as the write runs: the three-way status
+  checks are diagnostic buckets, so at most one can pass per request. `http_req_failed: 0.00%` is
+  the number that matters. Of 85,266 `resume` requests, **0** returned 404 and **0** errored.
+- Redis grew from 14,289 to 24,889 keys during the run — cache-aside filling from Postgres on each
+  miss, visible in the key count.
+
+## Raw output
+
+```
+█ THRESHOLDS
+    resume_duration
+    ✓ 'p(99)<50' p(99)=6.57ms
+
+  █ TOTAL RESULTS
+
+    ✓ resume 200 (found)
+    ✗ resume 404 (never watched)
+      ↳  0% — ✓ 0 / ✗ 85266
+    ✗ resume error
+      ↳  0% — ✓ 0 / ✗ 85266
+    ✓ continue-watching 200
+    ✗ continue-watching error
+      ↳  0% — ✓ 0 / ✗ 36941
+
+    CUSTOM
+    continue_watching_duration.....: avg=1.3ms  min=0s med=539.6µs max=48.32ms p(90)=2.65ms p(95)=3.12ms
+    resume_duration................: avg=1.77ms min=0s med=1.57ms  max=58.92ms p(90)=3.12ms p(95)=3.69ms
+
+    HTTP
+    http_req_duration..............: avg=1.63ms min=0s med=1.56ms  max=58.92ms p(90)=2.75ms p(95)=3.64ms
+    http_req_failed................: 0.00%  0 out of 122207
+    http_reqs......................: 122207 1163.852677/s
+
+    EXECUTION
+    vus............................: 3      min=0   max=25
+    vus_max........................: 800    min=800 max=800
+```
+
+## Degraded-mode read latency (Redis down)
+
+Measured while building the fallback path (see [DECISIONS.md](DECISIONS.md) D-025), single
+requests rather than under load:
+
+| Condition | `GET /v1/playback/resume/{titleId}` |
+|---|---|
+| Redis up | **14 ms** |
+| Redis stopped, before `timeout` was configured | ~78,000 ms (Lettuce's ~60 s default) |
+| Redis stopped, `spring.data.redis.timeout: 50ms` | **112–119 ms** |
+
+The fallback works, but **112 ms still exceeds NFR-3's 50 ms budget**. A per-request timeout has no
+memory: with Redis down, every request pays the wait on a dependency already known to be gone. That
+measured gap — not a general principle — is what justifies the circuit breaker in phase 6.
+
+## Read staleness (NFR-4)
+
+**NFR-4: a heartbeat is visible to a read within 2 s.** Measured end to end — HTTP `202` →
+Kafka → fold-consumer → Postgres + Redis → visible on `GET /v1/playback/resume/{titleId}` — by
+posting a heartbeat with a known position and polling the read endpoint until that position
+appears.
+
+| Trial | 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|
+| Visible after | 138 ms | 139 ms | 139 ms | 138 ms | 138 ms | 140 ms |
+
+**Met, with roughly 14× margin.**
+
+**Read this as an upper bound, not a precise figure.** Each poll spawns a separate `curl`
+process (~130 ms on this machine), so ~138 ms is the *measurement floor* of the method — the true
+pipeline latency is somewhere below it. The claim the number supports is "well inside 2 s", not
+"exactly 138 ms".
+
+Caffeine's 2 s TTL does not distort this: the first poll lands ~138 ms after the write, when no
+cached entry exists to serve a stale value from.
+
+### A false result worth recording
+
+The first attempt at this measurement produced 15 s timeouts on four consecutive trials, then
+4.7 s on the fifth. Consumer lag was **0** and the pipeline was healthy, so the numbers were not
+what they appeared to be: four timeouts of ~15,080 ms each is ~60 s, which is how long the Kafka
+**consumer group rebalance** takes after an application restart (the `NotCoordinator` retry loop
+visible in the startup logs). The fold-consumer was not processing at all during that window.
+
+The measurement was made valid by first confirming the consumer was live — posting a heartbeat and
+watching it reach Postgres and Redis — and only then timing the trials. **Startup rebalance time is
+a real property of the system, but it is not read staleness**, and reporting the first run's
+numbers as NFR-4 would have been wrong.

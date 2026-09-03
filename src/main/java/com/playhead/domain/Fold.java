@@ -1,4 +1,4 @@
-package com.playhead;
+package com.playhead.domain;
 
 /**
  * Combines the current {@link PlaybackState} with one incoming {@link Heartbeat} to produce the

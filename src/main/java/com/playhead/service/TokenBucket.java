@@ -1,4 +1,4 @@
-package com.playhead;
+package com.playhead.service;
 
 /**
  * A per-tier rate limiter. Holds a capped number of tokens, refilled continuously over time;

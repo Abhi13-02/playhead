@@ -1,4 +1,4 @@
-package com.playhead;
+package com.playhead.domain;
 
 /**
  * The current, single best-known playback position for one (profile, title) pair.

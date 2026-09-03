@@ -10,6 +10,11 @@ spring:
       maximum-pool-size: 10
   flyway:
     enabled: true
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 50ms
   kafka:
     bootstrap-servers: localhost:9092
     producer:
@@ -19,6 +24,16 @@ spring:
       auto-offset-reset: earliest
       value-deserializer: org.springframework.kafka.support.serializer.JacksonJsonDeserializer
       properties:
-        spring.json.trusted.packages: com.playhead
+        # The heartbeats topic carries exactly one type, so the consumer deserializes to it
+        # directly and ignores the type header the producer embeds. That decouples the consumer
+        # from the producer's class name and package (DECISIONS.md D-026).
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: com.playhead.domain.Heartbeat
     listener:
       ack-mode: manual
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
