@@ -38,6 +38,11 @@ public class PlaybackReadService {
 
     private static final Duration REDIS_TTL = Duration.ofHours(1);
 
+    // One breaker for the Redis dependency, shared by the read and write helpers below. Trips after
+    // 5 consecutive failures; stays open 5 s before letting a single probe through. Drill 1 showed a
+    // bounded per-call timeout is not enough on its own (ENGINEERING_LOG.md, DECISIONS.md D-027).
+    private final CircuitBreaker redisBreaker = new CircuitBreaker("redis", 5, Duration.ofSeconds(5));
+
     private static final String SELECT_STATE = """
             SELECT profile_id, title_id, position_seconds, duration_seconds, sequence
             FROM playback_state
@@ -128,18 +133,29 @@ public class PlaybackReadService {
     }
 
     private String readFromRedis(String key) {
+        if (!redisBreaker.allowRequest()) {
+            return null;
+        }
         try {
-            return redis.opsForValue().get(key);
+            String value = redis.opsForValue().get(key);
+            redisBreaker.recordSuccess();
+            return value;
         } catch (Exception e) {
+            redisBreaker.recordFailure();
             log.warn("Redis read failed for {} — falling back to Postgres", key, e);
             return null;
         }
     }
 
     private void writeToRedis(String key, PlaybackState state) {
+        if (!redisBreaker.allowRequest()) {
+            return;
+        }
         try {
             redis.opsForValue().set(key, objectMapper.writeValueAsString(state), REDIS_TTL);
+            redisBreaker.recordSuccess();
         } catch (Exception e) {
+            redisBreaker.recordFailure();
             log.warn("Redis write failed for {} — cache will fill on a later read", key, e);
         }
     }

@@ -496,3 +496,101 @@ rather than fixing it, and would not be available in production.
 hot, not idle. The consumer has no `ErrorHandlingDeserializer` or dead-letter topic, so any record
 it cannot deserialize still halts that partition. Left as a known gap for the phase-6 drills
 rather than fixed speculatively.
+
+---
+
+## D-027 · A circuit breaker in front of Redis on the read path · `SETTLED`
+
+D-025 set a 50 ms Lettuce command timeout and predicted a circuit breaker would be needed. Phase-6
+Drill 1 measured why. With Redis killed under the k6 read profile (2,000 rps target):
+
+| `resume` latency after the kill | timeout only (D-025) | + circuit breaker |
+|---|---|---|
+| p50 | 12,881 ms | 1.57 ms |
+| p99 | 15,814 ms | 72 ms |
+| `RedisCommandTimeoutException` during the outage | 30,336 | 71 |
+
+A single request with Redis down cost ~114 ms both ways — the timeout worked. Under load that same
+call reached ~12.8 s. The 50 ms timeout bounds *one* call; it does nothing about a caller making
+~4,000 doomed calls/sec (one GET + one SET per read) at a dependency already known to be down.
+Lettuce funnels a connection's I/O, its reconnect attempts, and every command's timeout timer
+through one event-loop worker; the flood of failing work buried it, so timeouts fired far later
+than 50 ms. Postgres was never the bottleneck — every query stayed under 1 ms, no Hikari pool
+exhaustion.
+
+**Decision: a small hand-rolled circuit breaker (`service/CircuitBreaker.java`), one instance
+guarding both Redis calls in `PlaybackReadService`.**
+
+- **Trip:** 5 consecutive failures → OPEN. The threshold is low because the drill is direct
+  evidence that continuing to call is catastrophic, not merely slow.
+- **Open duration:** 5 s, then one probe (HALF_OPEN). Redis restarts in well under a second; a
+  probe costs one request the ~50 ms timeout, so probing every 5 s is cheap.
+- **Close:** the probe succeeds → CLOSED, counter reset.
+
+*Hand-rolled, not Resilience4j:* the logic is an enum, a counter and a timestamp — not a subtle
+algorithm like W-TinyLFU, so D-007's "don't reimplement a library" rule does not apply.
+Resilience4j's Spring Boot starter targets Boot 3, and this project has already been bitten three
+times by Boot 4 module changes (D-017 Kafka starter, D-021 Flyway module, Jackson 3). Same
+reasoning as the phase-2 `TokenBucket`.
+
+*Verified recovery, and a genuine finding:* after a ~30 s outage the breaker closed on its own with
+no app restart, but ~36 s after Redis returned, not 5 s. Two probes fired and failed first because
+Lettuce had not finished its own reconnect backoff — breaker recovery is gated by the client's
+reconnect schedule, not only the breaker's cooldown. Written up in `ENGINEERING_LOG.md`.
+
+*Known limitation:* `continue-watching` still degraded at p99 (8 ms, from ~5 ms) during the outage
+even though it never touches Redis — collateral from the brief flood before the breaker tripped.
+The breaker does not eliminate the trip window, only bounds it.
+
+*Rejected:* raising the timeout instead (makes the jam worse); `bulkhead`/bounded Redis connection
+pool only (caps concurrency but every permitted call still pays the full wait); Resilience4j (Boot
+4 starter risk for ~40 lines of avoidable logic).
+
+---
+
+## D-028 · The Redis health contributor does not gate service health · `SETTLED`
+
+Phase-6 Drill 1: with Redis killed under load, `/actuator/health` returned `503 {"status":"DOWN"}`
+for the whole outage, even though every read was being served correctly from Postgres. The
+autoconfigured Redis health indicator (from `spring-boot-starter-data-redis` + actuator) aggregates
+into the top-level status. Behind a load balancer that probes `/actuator/health`, the instance
+would be evicted precisely while it is still doing its job.
+
+**Decision: `management.health.redis.enabled: false`.** Redis is a best-effort accelerator
+(D-025, D-027), not a dependency. Its liveness is already observable — cache hit-rate metrics
+(`/actuator/metrics/cache.gets`) and the circuit breaker's logged state transitions. The Postgres
+`db` indicator is deliberately left gating, because Postgres genuinely is a dependency: Drill 2
+confirmed `/actuator/health` correctly reports `DOWN` when Postgres is killed.
+
+*Rejected:* a custom health group that keeps `redis` visible but out of the readiness probe —
+cleaner in principle, but a load balancer here probes the top-level endpoint, and the metric-based
+visibility is enough for this project.
+
+---
+
+## D-029 · The event log is at-least-once; the fold makes duplicates harmless · `SETTLED`
+
+Phase-6 Drill 3 (`kill -9` the consumer mid-backlog) produced **288 duplicate
+`(profile_id, title_id, sequence)` rows in `playback_events`** out of ~65,000 messages (0.4%),
+each with a distinct `received_at` — genuine post-crash redelivery.
+
+Cause: `onHeartbeat` commits the `playback_events` INSERT and the `playback_state` UPSERT in one
+`@Transactional` unit, but `ack.acknowledge()` commits the Kafka offset **separately** — Kafka and
+Postgres are not in a shared transaction. SIGKILL after the DB commit and before the offset commit
+redelivers that message; the state UPSERT is a no-op (the D-019 sequence guard), the unconditional
+event INSERT runs a second time.
+
+**Decision: accept it.** `playback_state` is provably exactly-once (Drill 3: 0 anti-rewind
+violations). FR-10 replay folds `playback_events` through `Fold`, whose sequence check turns a
+duplicate event into a no-op — a replay from the duplicated log rebuilds byte-identical state
+(NFR-10 holds). The cost is 0.4% redundant log rows after a hard crash, which no consumer of the
+log is sensitive to.
+
+*Fix if it is ever needed:* `UNIQUE (profile_id, title_id, sequence)` on `playback_events` +
+`ON CONFLICT DO NOTHING` on the INSERT — a V2 migration plus one line. Not applied now: it adds a
+schema constraint and migration for a duplication the design already absorbs, and it would need
+care around the load generator's `sequence = Date.now()` which can collide under high concurrency.
+
+*Rejected:* an idempotency/dedup table keyed by message offset (heavier than the problem);
+transactional outbox / exactly-once Kafka semantics (large architectural change for a 0.4%
+cosmetic effect on an append-only log).

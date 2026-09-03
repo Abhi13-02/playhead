@@ -181,16 +181,22 @@ any infrastructure exists. Everything after this makes the same result bigger.
 
 **Cheap, high impact.** No new technology — `docker kill` and a notepad.
 
-- [ ] Drill 1 — kill Redis under load; reads fall back to Postgres
-- [ ] Drill 2 — kill Postgres; writes still accepted, buffered in Kafka
-- [ ] Drill 3 — stall the consumer; lag recovers, no duplicate application
-- [ ] Circuit breakers and timeouts where the drills show they are needed
-- [ ] `ENGINEERING_LOG.md` — each drill with **real** output
+- [x] Drill 1 — kill Redis under load; reads fall back to Postgres — 0.00% failed; `resume` p50
+      1.57 ms through the outage with the circuit breaker (was 12.8 s without it)
+- [x] Drill 2 — kill Postgres; writes still `202` (~8 ms), buffered in Kafka; consumer drained the
+      backlog on recovery with 0 lost, 0 duplicated, anti-rewind intact
+- [x] Drill 3 — `kill -9` the consumer mid-backlog; resumed from last committed offset, drained
+      clean; `playback_state` exactly-once (0 anti-rewind violations); found event-log duplication
+      (0.4%) from the offset-commit window, harmless under replay (finding 4)
+- [x] Circuit breakers and timeouts where the drills show they are needed — Redis breaker (D-027);
+      Redis health indicator demoted; Drills 2–3 needed no breaker (Kafka buffering already covers
+      the failure modes)
+- [x] `ENGINEERING_LOG.md` — each drill with **real** output
 
 **Gate**
-- [ ] Three drills run, real terminal output pasted, error rates recorded truthfully
-- [ ] At least one genuine unplanned failure written up
-- [ ] Degraded-mode behaviour is documented from real drills, not asserted.
+- [x] Three drills run, real terminal output pasted, error rates recorded truthfully
+- [x] At least one genuine unplanned failure written up — four (findings 1–4)
+- [x] Degraded-mode behaviour is documented from real drills, not asserted.
 
 ## Phase 7 — Pre-scaling from a schedule · *FR-7, FR-8, NFR-6, NFR-12, DIFF-2*
 

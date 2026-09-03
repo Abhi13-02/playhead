@@ -37,3 +37,14 @@ management:
     web:
       exposure:
         include: health,metrics
+  endpoint:
+    health:
+      show-components: always
+  health:
+    # Redis is a best-effort read-path accelerator, not a dependency (DECISIONS.md D-025/D-027).
+    # Its auto-configured health contributor was pulling the whole service's /actuator/health to
+    # DOWN whenever Redis was killed, even though reads keep working from Postgres — a load
+    # balancer would then evict a node that is still serving traffic correctly. Redis liveness is
+    # observed through the cache metrics and the circuit breaker's logged state instead.
+    redis:
+      enabled: false
