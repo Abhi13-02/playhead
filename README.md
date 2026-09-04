@@ -29,6 +29,28 @@ a hard ceiling on how slow a served request can get.**
 
 ---
 
+## Watching it happen
+
+A Grafana dashboard, backed by Prometheus scraping Actuator, screenshotted mid-surge:
+
+![Playhead under a live surge — request rate, read/write latency, cache hit rate, and Kafka
+consumer lag, all climbing and recovering in real time](docs/images/grafana-surge.png)
+
+Request rate ramps to **1.25K req/s** and back; p95 read/write latency rises under the load and
+falls as it clears; cache hit rate settles near **40%**; Kafka consumer lag builds to ~4,000 and
+drains once the surge passes. Run it yourself:
+
+```
+docker compose up -d
+# generate load, e.g.:
+k6 run load/mixed.js
+# then open:
+http://localhost:3000/d/playhead-surge   # Grafana — anonymous viewer access enabled
+http://localhost:9090                    # Prometheus
+```
+
+---
+
 ## The read path, measured
 
 122,207 requests against the same curve shape, ramping to 2,000 req/s. **0.00% failed.**

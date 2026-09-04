@@ -1,19 +1,18 @@
-# Two-stage build. Stage one compiles with the full JDK; stage two ships only the runtime and the
-# built jar, so the image that actually runs does not carry Gradle, the source tree, or a compiler
-# it will never use.
-
-FROM eclipse-temurin:25-jdk AS build
-WORKDIR /src
-
-# Wrapper and build scripts first, on their own layer. They change far less often than the source,
-# so Docker reuses the cached dependency download on every build where only code changed.
-COPY gradlew ./
-COPY gradle ./gradle
-COPY build.gradle settings.gradle ./
-RUN chmod +x gradlew && ./gradlew dependencies --no-daemon || true
-
-COPY src ./src
-RUN ./gradlew bootJar --no-daemon -x test
+# Packages a jar that is already built on the host, rather than building inside the image.
+#
+# This started as a two-stage build (full JDK compiles, JRE-only image ships the result) so the
+# image that runs never carries Gradle, the source tree, or a compiler it never uses. That build
+# stage needs the Gradle wrapper to download its own distribution over HTTPS on first run, and on
+# this machine that step began timing out consistently inside Docker's build network specifically
+# — `docker run` containers could reach the same host fine, only the builder's network path could
+# not, even after raising the wrapper's timeout and retry count. Real, current, environment-level
+# flakiness, not a project bug.
+#
+# The practical fix: build with `./gradlew bootJar` on the host (already the normal workflow all
+# session, and reliable), and have the image just package the result. This is a standard pattern —
+# many real CI pipelines build the artifact in one tool/stage and COPY it into a slim runtime image
+# — and it still keeps the shipped image free of build tooling; only the *place* the build runs
+# moved. Run `./gradlew bootJar` before `docker compose build app`.
 
 FROM eclipse-temurin:25-jre AS runtime
 WORKDIR /app
@@ -30,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl \
 # correct regardless of which machine builds or runs it.
 ENV JAVA_TOOL_OPTIONS="-Duser.timezone=UTC"
 
-COPY --from=build /src/build/libs/playhead.jar app.jar
+COPY build/libs/playhead.jar app.jar
 
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "app.jar"]

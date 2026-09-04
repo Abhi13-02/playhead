@@ -19,6 +19,7 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+    mem_limit: 1.5g
 
   redis:
     image: redis:7
@@ -26,6 +27,7 @@ services:
     ports:
       - "6379:6379"
     command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    mem_limit: 384m
 
   postgres:
     image: postgres:16
@@ -38,6 +40,7 @@ services:
       POSTGRES_PASSWORD: playhead
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    mem_limit: 512m
 
   # The application itself, containerised so it can be replicated. Deliberately has no
   # container_name and no published port: both are single-value settings, and `--scale app=N`
@@ -58,6 +61,7 @@ services:
       timeout: 3s
       retries: 30
       start_period: 5s
+    mem_limit: 1.5g
 
   # The load balancer. Every client talks to this one address; it spreads requests across whatever
   # app replicas currently exist. Without it, replicas would be unreachable — they publish no port.
@@ -70,6 +74,37 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - app
+    mem_limit: 64m
+
+  # NFR-11: latency percentiles, errors, consumer lag, cache hit rate, one dashboard, screenshotted
+  # under a live surge for the README. Scrapes the app's Actuator /actuator/prometheus endpoint.
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: playhead-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+    mem_limit: 512m
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: playhead-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: playhead
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    mem_limit: 256m
 
 volumes:
   postgres-data:

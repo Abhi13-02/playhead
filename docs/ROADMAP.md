@@ -239,16 +239,41 @@ story far more cheaply. The k8s version is phase 8, and optional.
 
 Everything here is optional. Do it if there is time; skip it without guilt.
 
-- [ ] Prometheus + Grafana, one dashboard: latency percentiles, errors, consumer lag, instance
-      count, cache hit rate
-- [ ] Dashboard screenshot under surge, in the README
-- [ ] Final README: numbers first, then the demo script from SPEC §10
-- [ ] *Optional:* k3s manifests + HPA, as the production-shaped version of phase 7
+- [x] Prometheus + Grafana, one dashboard: latency percentiles, errors, consumer lag, instance
+      count, cache hit rate — `prometheus.yml`, `grafana/provisioning/`, dashboard `playhead-surge`
+      auto-provisioned on `docker compose up`, no manual clicking needed. 10 panels: read/write
+      latency p50/p95/p99, request rate by status, admission-control shed rate by tier, cache hit
+      rate, Kafka consumer lag, app instances up, in-flight write permits, cache misses, JVM heap.
+- [x] Dashboard screenshot under surge, in the README — `docs/images/grafana-surge.png`, captured
+      live via headless Chrome against a real `load/mixed.js` run (not mocked): request rate
+      ramping to 1.25K req/s and back, p95 latency rising and clearing, cache hit rate settling
+      ~40%, consumer lag building to ~4,000 and draining.
+- [x] Final README: numbers first, then the demo script — already numbers-first from earlier
+      phases; added the dashboard section with real run instructions.
+- [ ] *Optional, skipped:* k3s manifests + HPA — out of scope, matches the 2026-09-04 decision to
+      stop scaling-layer work.
 
 **Gate**
-- [ ] Someone who has never seen the repo can run it from the README alone
-- [ ] **Resource envelope (NFR-13):** `docker stats` recorded, showing the whole system inside the
-      12 GB envelope with a declared limit per service
+- [x] Someone who has never seen the repo can run it from the README alone — `docker compose up -d`
+      brings up the full stack including monitoring; verified `/actuator/health`,
+      `/actuator/prometheus`, Grafana, and a real read (`GET /resume/{titleId}`) all `200` after a
+      fresh `up`.
+- [x] **Resource envelope (NFR-13):** `docker stats` recorded, whole system inside 12 GB with a
+      declared `mem_limit` per service (`docker-compose.yml`). Measured real usage vs. declared
+      limit, one snapshot under load:
+
+      | service | mem used | limit |
+      |---|---|---|
+      | app | 283 MiB | 1.5 GiB |
+      | kafka | 315 MiB | 1.5 GiB |
+      | grafana | 52 MiB | 256 MiB |
+      | postgres | 36 MiB | 512 MiB |
+      | prometheus | 23 MiB | 512 MiB |
+      | redis | 11 MiB | 384 MiB |
+      | nginx | 3.6 MiB | 64 MiB |
+
+      Declared limits sum to **~4.7 GiB**, real usage **~0.7 GiB** — both comfortably inside the
+      12 GB envelope with headroom to spare.
 
 ---
 

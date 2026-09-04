@@ -1,6 +1,9 @@
-build/
 .gradle/
 .git/
 load/
 docs/
 *.md
+build/*
+!build/libs
+build/libs/*
+!build/libs/playhead.jar

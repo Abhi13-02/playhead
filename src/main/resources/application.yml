@@ -36,10 +36,20 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,metrics
+        include: health,metrics,prometheus
   endpoint:
     health:
       show-components: always
+  metrics:
+    distribution:
+      # Real percentile buckets for http.server.requests (read/write latency panels) and the Kafka
+      # producer/consumer timers, so Grafana can compute p50/p95/p99 with histogram_quantile
+      # instead of only ever seeing the JVM-local percentiles reported at scrape time.
+      percentiles-histogram:
+        http.server.requests: true
+        kafka.producer.request.latency: true
+      slo:
+        http.server.requests: 10ms,50ms,100ms,500ms,1s
   health:
     # Redis is a best-effort read-path accelerator, not a dependency (DECISIONS.md D-025/D-027).
     # Its auto-configured health contributor was pulling the whole service's /actuator/health to
