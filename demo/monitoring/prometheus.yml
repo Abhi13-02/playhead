@@ -6,3 +6,10 @@ scrape_configs:
     metrics_path: /actuator/prometheus
     static_configs:
       - targets: ["app:8080"]
+
+  # Redis's own metrics. Kept as a separate job because it has a separate failure mode: when the
+  # chaos button kills Redis this target goes down while the app's target stays up, which is
+  # exactly the distinction the dashboard needs to show.
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]

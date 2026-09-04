@@ -63,3 +63,19 @@ cannot do.
 So this panel drives requests itself, from Node, on a rate that can change mid-flight. It reaches a
 few thousand requests/sec, which is enough to show behaviour but well short of the service's real
 ceiling. **Use k6 for numbers, use this for showing.**
+
+## Redis panels
+
+`redis-exporter` (in `docker-compose.yml`) reports Redis's own view of itself, scraped as a separate
+Prometheus job. That separation is deliberate: when the chaos button kills Redis, its target goes
+down while the app's target stays up, and the dashboard shows both lines at once.
+
+| Panel | Shows |
+|---|---|
+| Redis — up / down | `redis_up` against the app's own reachability. The whole degradation story in one graph. |
+| Redis — operations/sec | Commands Redis is serving. Falls to nothing once the circuit breaker opens. |
+| Redis — memory used | Against the 256 MB `maxmemory` cap. |
+| Redis — keyspace hit rate | The *second* cache tier — reached only when Caffeine misses, so it reads differently from the Caffeine panel. |
+
+Measured during a kill and restart at 1,620 req/s: **0 failed requests**, `redis_up` 1 → 0 → 1, and
+read latency stepping up rather than the service failing.

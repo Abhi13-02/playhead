@@ -29,6 +29,20 @@ services:
     command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
     mem_limit: 384m
 
+  # Reports Redis's own view of itself — ops/sec, memory, connected clients, and whether it is
+  # answering at all. The app's Lettuce metrics describe the *client's* experience; this describes
+  # the server, which is what the chaos buttons actually take away. Demo apparatus, like the rest
+  # of the monitoring stack: nothing in the service depends on it.
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.66.0
+    container_name: playhead-redis-exporter
+    command: ["--redis.addr=redis://redis:6379"]
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis
+    mem_limit: 64m
+
   postgres:
     image: postgres:16
     container_name: playhead-postgres
