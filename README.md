@@ -29,6 +29,29 @@ a hard ceiling on how slow a served request can get.**
 
 ---
 
+## Driving it live
+
+A demo control panel ([`demo/`](demo/)) drives load and breaks dependencies while the graphs
+respond, so the behaviour below can be reproduced by moving a slider rather than by reading a
+benchmark table:
+
+![Demo control panel — traffic sliders per priority tier, kill/restart buttons for Redis,
+PostgreSQL and Kafka, live per-second counters, and the Grafana dashboard responding alongside
+them](docs/images/demo-control-panel.png)
+
+```bash
+docker compose up -d     # service + Prometheus + Grafana
+node demo/server.js      # then open http://localhost:4000
+```
+
+Three things it makes visible in about thirty seconds each: **priority shedding** (push the surge
+preset — the `429`s land on reads, not on playback writes), **degraded reads** (kill Redis — traffic
+keeps succeeding via the Postgres fallback), and **buffered writes** (kill Postgres — writes still
+`202`, consumer lag climbs, then drains on recovery).
+
+It is deliberately separate from the service: nothing in `src/` knows it exists, and deleting
+`demo/` changes nothing about the system. See [demo/README.md](demo/README.md).
+
 ## Watching it happen
 
 A Grafana dashboard, backed by Prometheus scraping Actuator, screenshotted mid-surge:
@@ -140,8 +163,18 @@ Detailed scope and exit criteria: [docs/ROADMAP.md](docs/ROADMAP.md).
 Requires Docker and JDK 25.
 
 ```bash
-docker compose up -d          # Kafka (KRaft), PostgreSQL 16, Redis 7
-./gradlew bootRun             # starts on :8080, Flyway applies the schema
+./gradlew bootJar             # build the jar (the image packages it — see Dockerfile)
+docker compose up -d          # app + nginx + Kafka (KRaft) + PostgreSQL 16 + Redis 7 + monitoring
+```
+
+The service is behind nginx on **:8080**, Grafana on **:3000**, Prometheus on **:9090**. Flyway
+applies the schema on first start.
+
+To run the app on the host instead of in a container — useful when iterating on code:
+
+```bash
+docker compose up -d kafka postgres redis
+./gradlew bootRun             # binds :8080 directly, no nginx
 ```
 
 Post a heartbeat:

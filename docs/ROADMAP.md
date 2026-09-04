@@ -240,7 +240,7 @@ story far more cheaply. The k8s version is phase 8, and optional.
 Everything here is optional. Do it if there is time; skip it without guilt.
 
 - [x] Prometheus + Grafana, one dashboard: latency percentiles, errors, consumer lag, instance
-      count, cache hit rate — `prometheus.yml`, `grafana/provisioning/`, dashboard `playhead-surge`
+      count, cache hit rate — `demo/monitoring/`, dashboard `playhead-surge`
       auto-provisioned on `docker compose up`, no manual clicking needed. 10 panels: read/write
       latency p50/p95/p99, request rate by status, admission-control shed rate by tier, cache hit
       rate, Kafka consumer lag, app instances up, in-flight write permits, cache misses, JVM heap.

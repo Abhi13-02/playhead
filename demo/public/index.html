@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Playhead — Demo Control Panel</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --line: #262d36;
+    --text: #e6edf3; --dim: #8b949e;
+    --ok: #3fb950; --shed: #d29922; --bad: #f85149; --accent: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+  }
+  header {
+    padding: 14px 20px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 650; }
+  header .sub { color: var(--dim); font-size: 12px; }
+  .wrap { padding: 20px; display: grid; gap: 16px; grid-template-columns: 380px 1fr; align-items: start; }
+  @media (max-width: 1100px) { .wrap { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  .card h2 { margin: 0 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); font-weight: 600; }
+  .card .hint { color: var(--dim); font-size: 12px; margin: 0 0 14px; }
+  .slider { margin-bottom: 16px; }
+  .slider label { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }
+  .slider .val { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
+  .slider .cap { color: var(--dim); font-size: 11px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .presets { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  button {
+    background: #21262d; color: var(--text); border: 1px solid var(--line);
+    padding: 7px 12px; border-radius: 7px; font-size: 12.5px; cursor: pointer; font-family: inherit;
+  }
+  button:hover { border-color: #3d444d; background: #262c34; }
+  button.danger { color: var(--bad); }
+  button.go { color: var(--ok); }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 4px; }
+  .stat { background: #0f141a; border: 1px solid var(--line); border-radius: 8px; padding: 10px; text-align: center; }
+  .stat .n { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 10.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+  .dep { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
+  .dep:last-child { border-bottom: 0; }
+  .dep .name { display: flex; align-items: center; gap: 9px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); }
+  .dot.running { background: var(--ok); }
+  .dot.exited { background: var(--bad); }
+  iframe { width: 100%; border: 0; border-radius: 10px; background: var(--panel); display: block; }
+  .log { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px; color: var(--dim); margin-top: 10px; white-space: pre-wrap; max-height: 90px; overflow-y: auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Playhead — Demo Control Panel</h1>
+  <span class="sub">drive load · break dependencies · watch the graphs respond</span>
+</header>
+
+<div class="wrap">
+  <div>
+    <div class="card">
+      <h2>Traffic</h2>
+      <p class="hint">Requests/sec sent to the service, live. Changes take effect immediately.</p>
+
+      <div class="slider">
+        <label><span>Playback writes <span class="cap">(heartbeat — highest priority)</span></span><span class="val" id="v-write">0</span></label>
+        <input type="range" id="s-write" min="0" max="3000" step="25" value="0">
+      </div>
+      <div class="slider">
+        <label><span>Resume reads <span class="cap">(mid priority)</span></span><span class="val" id="v-resume">0</span></label>
+        <input type="range" id="s-resume" min="0" max="3000" step="25" value="0">
+      </div>
+      <div class="slider">
+        <label><span>Browse reads <span class="cap">(shed first)</span></span><span class="val" id="v-browse">0</span></label>
+        <input type="range" id="s-browse" min="0" max="3000" step="25" value="0">
+      </div>
+
+      <div class="presets">
+        <button onclick="preset(0,0,0)">Idle</button>
+        <button onclick="preset(400,200,80)">Normal</button>
+        <button onclick="preset(1500,900,400)">Busy</button>
+        <button onclick="preset(3000,3000,3000)">Tentpole surge</button>
+      </div>
+
+      <div class="stats">
+        <div class="stat"><div class="n" id="n-sent">0</div><div class="k">sent/s</div></div>
+        <div class="stat"><div class="n" id="n-ok" style="color:var(--ok)">0</div><div class="k">ok</div></div>
+        <div class="stat"><div class="n" id="n-shed" style="color:var(--shed)">0</div><div class="k">429 shed</div></div>
+        <div class="stat"><div class="n" id="n-failed" style="color:var(--bad)">0</div><div class="k">failed</div></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h2>Chaos</h2>
+      <p class="hint">Kill a dependency and watch the read path fall back, the breaker trip, or Kafka buffer the writes.</p>
+      <div id="deps"></div>
+      <div class="log" id="log"></div>
+    </div>
+  </div>
+
+  <div class="card" style="padding:10px">
+    <iframe id="graphs" src="http://localhost:3000/d/playhead-surge/playhead-surge-overview?orgId=1&from=now-5m&to=now&refresh=5s&kiosk" height="1000"></iframe>
+  </div>
+</div>
+
+<script>
+const DEPS = [
+  { key: 'redis',    label: 'Redis',      note: 'read cache — expect fallback to Postgres' },
+  { key: 'postgres', label: 'PostgreSQL', note: 'writes should still 202, buffered in Kafka' },
+  { key: 'kafka',    label: 'Kafka',      note: 'the write path depends on it' },
+];
+
+const $ = (id) => document.getElementById(id);
+const logLines = [];
+
+function log(msg) {
+  logLines.unshift(new Date().toLocaleTimeString() + '  ' + msg);
+  $('log').textContent = logLines.slice(0, 6).join('\n');
+}
+
+async function pushRates() {
+  const body = {
+    write: +$('s-write').value,
+    resume: +$('s-resume').value,
+    browse: +$('s-browse').value,
+  };
+  for (const k of ['write', 'resume', 'browse']) $('v-' + k).textContent = body[k];
+  await fetch('/api/load', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+}
+
+for (const k of ['write', 'resume', 'browse']) $('s-' + k).addEventListener('input', pushRates);
+
+function preset(w, r, b) {
+  $('s-write').value = w; $('s-resume').value = r; $('s-browse').value = b;
+  pushRates();
+  log(`load set to ${w} write / ${r} resume / ${b} browse req/s`);
+}
+
+async function chaos(target, action) {
+  log(`${action} ${target} ...`);
+  const res = await fetch('/api/chaos', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target, action }),
+  });
+  log(res.ok ? `${target} ${action} done` : `${target} ${action} FAILED`);
+  refresh();
+}
+
+$('deps').innerHTML = DEPS.map((d) => `
+  <div class="dep">
+    <div class="name">
+      <span class="dot" id="dot-${d.key}"></span>
+      <div><div>${d.label}</div><div class="cap" style="color:var(--dim);font-size:11px">${d.note}</div></div>
+    </div>
+    <div style="display:flex;gap:6px">
+      <button class="danger" onclick="chaos('${d.key}','kill')">Kill</button>
+      <button class="go" onclick="chaos('${d.key}','start')">Start</button>
+    </div>
+  </div>`).join('');
+
+// The server owns the rates, not this page — a reload, or a rate set from elsewhere, must not
+// leave the sliders showing something the service is not actually doing.
+let slidersTouched = false;
+for (const k of ['write', 'resume', 'browse']) {
+  $('s-' + k).addEventListener('pointerdown', () => { slidersTouched = true; });
+}
+
+function syncSliders(serverRates) {
+  if (slidersTouched) return; // do not yank the handle out from under a drag
+  for (const k of ['write', 'resume', 'browse']) {
+    $('s-' + k).value = serverRates[k];
+    $('v-' + k).textContent = serverRates[k];
+  }
+}
+
+async function refresh() {
+  try {
+    const s = await (await fetch('/api/status')).json();
+    syncSliders(s.rates);
+    $('n-sent').textContent = s.lastSecond.sent;
+    $('n-ok').textContent = s.lastSecond.ok;
+    $('n-shed').textContent = s.lastSecond.shed;
+    $('n-failed').textContent = s.lastSecond.failed;
+    for (const d of DEPS) {
+      const dot = $('dot-' + d.key);
+      dot.className = 'dot ' + (s.containers[d.key] || '');
+    }
+  } catch (e) { /* panel backend restarting; next tick will pick it up */ }
+}
+
+setInterval(refresh, 1000);
+refresh();
+</script>
+</body>
+</html>

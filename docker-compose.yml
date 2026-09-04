@@ -78,13 +78,14 @@ services:
 
   # NFR-11: latency percentiles, errors, consumer lag, cache hit rate, one dashboard, screenshotted
   # under a live surge for the README. Scrapes the app's Actuator /actuator/prometheus endpoint.
+  # Config lives under demo/ with the rest of the demo harness — none of it is part of the service.
   prometheus:
     image: prom/prometheus:v2.55.1
     container_name: playhead-prometheus
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./demo/monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=6h
@@ -100,8 +101,12 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_USERS_DEFAULT_THEME: dark
+      # The demo control panel embeds these dashboards in an iframe. Without both of these Grafana
+      # sends X-Frame-Options and the panel shows an empty box instead of the graphs.
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+      GF_SECURITY_COOKIE_SAMESITE: none
     volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./demo/monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
     depends_on:
       - prometheus
     mem_limit: 256m
