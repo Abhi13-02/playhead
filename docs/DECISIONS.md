@@ -632,3 +632,42 @@ that changed) or infrastructure beyond one laptop to close cleanly.
 
 *Rejected:* keep resizing the semaphore in hope of a passing run — run 4 already showed more
 permits make the result worse, not better, once the bottleneck moved to the OS/CPU layer.
+
+---
+
+## D-031 · Per-instance token buckets do not survive horizontal scaling · `OPEN`
+
+Phase 7 replicated the app for the first time, and the phase-7 A/B exposed a defect that could not
+exist while there was exactly one instance:
+
+| | 1 replica | 3 replicas |
+|---|---|---|
+| `resume_shed` | 23.88% | **0.00%** |
+| `browse_shed` | 18.33% | **0.00%** |
+
+`AdmissionControl` holds its `TokenBucket`s in instance memory, so **each replica gets a full set**.
+Scaling to 3 multiplied the fleet-wide admission limits by 3 — 24,000 write/s, 4,500 resume/s,
+1,500 browse/s — and the offered read load (3,000/s resume, 1,000/s browse) fell under the new
+ceiling entirely. Nothing was shed because, fleet-wide, nothing exceeded the limit any more.
+
+**The limits were sized against what the *system* can serve (D-030, BENCHMARKS.md), not against
+what one replica can serve.** Multiplying them by the replica count silently removes the protection
+the surge thesis depends on: pre-scaling and admission control are supposed to compose, and here
+scaling up switched admission control off.
+
+*Left open deliberately, not fixed in place.* The two real options both have costs worth stating
+rather than picking silently:
+
+- **Divide the limit per instance** (`capacity / replicaCount`). Cheap and stateless, but every
+  replica must know the current replica count, which means the scaling controller has to inform
+  the fleet — new coupling between control plane and data plane. It also degrades badly when
+  traffic is unevenly balanced across replicas.
+- **A shared limiter in Redis** (one bucket the whole fleet decrements). Correct fleet-wide, and
+  Redis is already a dependency — but it puts a network hop on the admission path of *every*
+  request, and phase-6 Drill 1 established that Redis is explicitly *not* a hard dependency
+  (D-025/D-027). Admission control failing closed when Redis is slow would be worse than the
+  problem it fixes.
+
+Recorded here because a benchmark that reports 0% shedding looks like success and is actually the
+protection being disabled — exactly the kind of number that must not be quoted without this
+context.

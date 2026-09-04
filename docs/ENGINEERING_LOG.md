@@ -347,3 +347,113 @@ See the full write-up above.
 ## Drill 3 — consumer stalled, lag recovery
 
 See the full write-up above.
+
+---
+
+## Phase 7 — pre-scaling from a schedule
+
+The app had never run in a container: `docker-compose.yml` held only Kafka, Postgres and Redis, and
+the app was always started on the host with `bootRun`. Nothing could be replicated, so pre-scaling
+had nothing to act on. Phase 7 containerised the app (`Dockerfile`), put nginx in front of it as a
+load balancer, added the tentpole calendar (`scheduled_event`, `EventScheduleController`), and a
+host-side `control/ScalingController.java` that reads the calendar and drives `docker compose`.
+
+### Measured container start time (NFR-6)
+
+The lead time is built on this number rather than a guess. Time from the scale command to a new
+replica passing its Compose healthcheck, three trials:
+
+```
+scale 1 -> 2 ready in 9377 ms
+scale 1 -> 2 ready in 8982 ms
+scale 1 -> 2 ready in 8736 ms
+```
+
+Rounded up from the worst to **10 s**, giving:
+
+```
+lead = poll interval (10s) + measured container start (10s) + safety margin (10s) = 30 s
+```
+
+### Load balancing across replicas actually works
+
+nginx resolves an upstream once at startup and caches it forever, which would have made replicas
+started later by `--scale` invisible — pre-scaling would have appeared to work while sending all
+traffic to the original replica. The `resolver 127.0.0.11 valid=2s` + `$backend` variable in
+`nginx.conf` defers resolution to request time. Verified by counting requests per container over
+200 requests through nginx:
+
+```
+playhead-app-2: 111 -> 210   (+99)
+playhead-app-1: 197 -> 308   (+111)
+```
+
+### Unplanned finding 5 — capacity collapsed the moment the event started
+
+The first unattended run scaled up correctly and then did exactly the wrong thing:
+
+```
+[09:57:48] event start time
+[09:51:26] scaling 1 -> 3          <- 22s before the event, correct
+[09:51:57] scaling 3 -> 1          <- 9s AFTER the event started
+```
+
+`SELECT_UPCOMING` filtered `where starts_at >= now`, so an event **disappeared from the schedule
+the instant it began**. The controller then saw an empty list, computed baseline, and scaled down —
+dropping capacity precisely as the surge landed. The pre-scale worked and was then thrown away
+seconds later.
+
+**Fix:** a `lookbackSeconds` parameter on `/v1/events/upcoming`, which the controller sets to the
+event duration so a running event stays visible for as long as capacity should be held for it.
+Verified directly:
+
+```
+without lookback:        []
+with lookbackSeconds=180: [{"name":"already started", ...}]
+```
+
+### The gate run — unattended, after the fix
+
+Event at `09:57:48`, expected peak 21,000 rps, one replica serves a measured 7,000 -> 3 replicas.
+
+```
+[09:56:24] controller up - lead time 30s (poll 10s + measured start 10s + margin 10s)
+[09:57:25] scaling 1 -> 3                     <- 23s before start
+[09:57:35] pre-scaled and waiting - idle cost so far 21.7 instance-seconds
+[09:57:45] pre-scaled and waiting - idle cost so far 41.7 instance-seconds
+[10:00:56] scaling 3 -> 1                     <- 188s after start (180s duration + poll)
+```
+
+Replica count sampled against event start (negative = before):
+
+```
+ -25s | 1 replica            -6s | 3 healthy         +182s | 3 healthy
+ -19s | 3 created           +60s | 3 healthy         +195s | 1 replica
+ -12s | 3 healthy          +120s | 3 healthy
+```
+
+**Capacity was in place 12 s before the event, held throughout, and returned afterwards, with no
+human action.** Cost (NFR-12): **41.7 instance-seconds** held idle before the event started,
+61.7 including the tail before scale-down.
+
+### The A/B — and the finding that matters more than the A/B
+
+Same `load/mixed.js` curve, 1 replica vs 3 pre-scaled replicas, both fully containerised:
+
+| | 1 replica | 3 replicas |
+|---|---|---|
+| `write_success` | 66.20% | 70.47% |
+| throughput | 2,517 req/s | **1,993 req/s** |
+| p95 latency | 1.18 s | **14.94 s** |
+| `resume_shed` / `browse_shed` | 23.88% / 18.33% | **0.00% / 0.00%** |
+
+**Tripling the replicas did not triple capacity — it reduced throughput and made latency far
+worse.** Three JVMs, each with its own heap, GC and connection pools, plus nginx, plus k6, plus
+Kafka/Postgres/Redis, all contend for the same laptop cores. This is the same single-machine
+ceiling D-030 recorded, now reached from the other direction: horizontal scaling cannot add
+capacity that the underlying hardware does not have.
+
+The 0.00% shedding is **not** a success — it is the protection being switched off. Each replica
+carries its own in-memory token buckets, so 3 replicas meant 3x the fleet-wide admission limits and
+the offered read load no longer exceeded them. Written up as **D-031**, left open with the
+trade-offs stated rather than patched silently.

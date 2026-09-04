@@ -341,3 +341,65 @@ The measurement was made valid by first confirming the consumer was live — pos
 watching it reach Postgres and Redis — and only then timing the trials. **Startup rebalance time is
 a real property of the system, but it is not read staleness**, and reporting the first run's
 numbers as NFR-4 would have been wrong.
+
+---
+
+# Phase 7 — pre-scaling from a schedule
+
+*Recorded 2026-09-04. Fully containerised: nginx -> N app replicas -> Kafka/Postgres/Redis, all on
+one machine. Narrative and the bug found mid-run are in [ENGINEERING_LOG.md](ENGINEERING_LOG.md).*
+
+## Measured container start time (NFR-6)
+
+Scale command to a new replica passing its healthcheck, three trials:
+
+| trial | 1 | 2 | 3 |
+|---|---|---|---|
+| ready in | 9,377 ms | 8,982 ms | 8,736 ms |
+
+Rounded up from the worst to 10 s. The pre-scale lead time is therefore, with every term stated:
+
+```
+lead = poll interval 10s + measured container start 10s + safety margin 10s = 30 s
+```
+
+## The unattended pre-scale
+
+Event at `09:57:48`, expected peak 21,000 rps, one replica measured at 7,000 rps -> 3 replicas.
+
+| moment | replicas |
+|---|---|
+| event start − 25 s | 1 |
+| event start − 19 s | 3 (created) |
+| **event start − 12 s** | **3 healthy — capacity in place before the event** |
+| event start + 120 s | 3 healthy |
+| event start + 195 s | 1 (returned) |
+
+**Ready 12 s before the event, no human action.** Cost (NFR-12): **41.7 instance-seconds** idle
+before the event began; 61.7 including the tail before scale-down.
+
+## A/B — 1 replica vs 3 pre-scaled replicas
+
+Same `load/mixed.js` curve for both.
+
+| | 1 replica | 3 replicas |
+|---|---|---|
+| `write_success` | 66.20% | 70.47% |
+| throughput | 2,517 req/s | **1,993 req/s** |
+| p95 latency | 1.18 s | **14.94 s** |
+| `resume_shed` | 23.88% | 0.00% |
+| `browse_shed` | 18.33% | 0.00% |
+
+**Read this honestly: tripling replicas did not triple capacity — throughput fell and p95 latency
+rose more than tenfold.** Three JVMs with their own heaps, GCs and pools, plus nginx, k6 and three
+datastores, all share this laptop's cores. Horizontal scaling cannot manufacture hardware that is
+not there, and this is the same single-machine ceiling D-030 hit from the other direction.
+
+**The 0.00% shedding is a defect, not a win.** Token buckets live in each replica's memory, so 3
+replicas tripled the fleet-wide admission limits and the offered read load stopped exceeding them —
+scaling up silently disabled admission control. See [DECISIONS.md](DECISIONS.md) D-031, left open
+with the trade-offs stated.
+
+**What phase 7 does prove:** the pre-scaling mechanism itself — schedule-driven, measured lead time,
+correct timing, unattended, with the cost counted. What it does not prove is a throughput gain,
+which this hardware cannot show.

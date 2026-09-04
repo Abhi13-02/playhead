@@ -206,17 +206,34 @@ any infrastructure exists. Everything after this makes the same result bigger.
 **No Kubernetes.** `docker compose up --scale` driven by a controller gives the same engineering
 story far more cheaply. The k8s version is phase 8, and optional.
 
-- [ ] `event-schedule` service — register an upcoming tentpole
-- [ ] `scaling-controller` — reads the schedule, scales instances up ahead of the event, back down
-      after, unattended
-- [ ] Pre-scale lead time derived from **measured** container start time
-- [ ] Re-run the phase-2 A/B with pre-scaling in the mix
+- [x] `event-schedule` service — register an upcoming tentpole — `scheduled_event` table (V2) +
+      `EventScheduleController` (`POST /v1/events`, `GET /v1/events/upcoming`)
+- [x] `scaling-controller` — reads the schedule, scales instances up ahead of the event, back down
+      after, unattended — `control/ScalingController.java`
+- [x] Pre-scale lead time derived from **measured** container start time — 9,377/8,982/8,736 ms
+      over three trials
+- [x] **Prerequisite not in the original list:** the app had never been containerised. `Dockerfile`
+      + `nginx.conf` + app/nginx services in `docker-compose.yml` were needed before anything could
+      be replicated at all.
+- [x] Re-run the phase-2 A/B with pre-scaling in the mix — done, and the result is *negative* on
+      throughput; see the gate note below
 
 **Gate**
-- [ ] A scheduled event raises capacity **before** its start time, with no human action
-- [ ] The pre-scale lead time is derived from **measured** container start time, and the
-      arithmetic (metric delay + scrape interval + stabilisation window + start time) is recorded
-- [ ] The cost is stated: idle instance-minutes spent buying the headroom
+- [x] A scheduled event raises capacity **before** its start time, with no human action — 1 → 3
+      replicas, healthy **12 s before** the event, held throughout, returned after. Required
+      fixing a real bug first: a started event dropped out of `/v1/events/upcoming`, so capacity
+      collapsed 9 s *after* the event began (ENGINEERING_LOG.md, unplanned finding 5).
+- [x] The pre-scale lead time is derived from **measured** container start time, and the
+      arithmetic is recorded — `lead = poll 10s + measured start 10s + margin 10s = 30s`. The
+      metric-delay/scrape-interval/stabilisation-window terms are recorded as *why reactive
+      autoscaling is too slow*; a schedule-driven controller does not pay them, which is the point.
+- [x] The cost is stated: **41.7 instance-seconds** idle before the event (61.7 including the tail
+      before scale-down)
+- [ ] **Not claimed: a throughput gain from scaling.** 3 replicas measured *worse* than 1 —
+      throughput 2,517 → 1,993 req/s, p95 1.18 s → 14.94 s — because three JVMs share one laptop's
+      cores. Horizontal scaling cannot add hardware that is not there. The A/B also exposed
+      **D-031**: per-instance token buckets multiply by replica count, so scaling up silently
+      disabled admission control (0.00% shedding). Left open with trade-offs stated.
 
 ## Phase 8 — Polish · *NFR-11, NFR-13*
 
