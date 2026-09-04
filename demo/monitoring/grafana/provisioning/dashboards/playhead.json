@@ -66,11 +66,16 @@
     {
       "id": 6,
       "title": "Kafka consumer lag",
+      "description": "Total unprocessed messages across all partitions — how far the fold-consumer is behind the producer. Should climb under a surge and drain back to zero once it passes.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 }, "overrides": [] },
       "targets": [
-        { "expr": "max(kafka_consumer_fetch_manager_records_lag_max)", "legendFormat": "max lag" }
+        {
+          "comment": "records_lag (a plain per-partition gauge), NOT records_lag_max. The _max variant is a windowed statistic that reports NaN once fetches stop returning records; Prometheus drops NaN samples, so the panel kept drawing its last value and showed a large backlog forever after traffic stopped, while the real lag was zero. Summed rather than maxed because the backlog that matters is the total across partitions, not the worst single one.",
+          "expr": "sum(kafka_consumer_fetch_manager_records_lag)",
+          "legendFormat": "total lag"
+        }
       ]
     },
     {
