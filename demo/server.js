@@ -51,19 +51,57 @@ const pick = (a) => a[Math.floor(Math.random() * a.length)];
 /** Live target rates, in requests/sec. Changed by the slider, read by the tickers. */
 const rates = { write: 0, resume: 0, browse: 0 };
 
+/**
+ * The generator needs the same backpressure the service has, for the same reason.
+ *
+ * Without this the tickers keep firing at the requested rate regardless of whether responses are
+ * coming back, so when the target saturates, pending requests pile up in Node's heap until it dies.
+ * That is exactly what happened at 15,000 req/s: the panel process aborted with "JavaScript heap
+ * out of memory" after climbing to a 4 GB heap, and took the demo down with it.
+ *
+ * Requests beyond the cap are dropped and counted as `skipped` rather than queued. Counting them
+ * separately matters: `skipped` means *this panel* could not send it, `shed` means the *service*
+ * refused it. Merging the two would make generator saturation look like admission control working.
+ */
+/*
+ * 3,000 was the first value and it was too high to be useful: every slot filled with a request the
+ * saturated service would take seconds to answer, so slots never freed, throughput fell to zero and
+ * latency pinned at the timeout. The panel showed a jammed system rather than a shedding one.
+ *
+ * 500 is sized from Little's Law against what this machine actually serves — a few thousand
+ * requests/sec at tens of milliseconds — so slots turn over fast enough that traffic keeps flowing
+ * and the service's own 429s stay visible, which is the behaviour worth watching.
+ */
+const MAX_IN_FLIGHT = 500;
+let inFlight = 0;
+
 /** Rolling counts, reset each second, so the panel can show what it is actually achieving. */
-let counters = { sent: 0, ok: 0, shed: 0, failed: 0 };
-let lastSecond = { sent: 0, ok: 0, shed: 0, failed: 0 };
+let counters = { sent: 0, ok: 0, shed: 0, failed: 0, skipped: 0 };
+let lastSecond = { sent: 0, ok: 0, shed: 0, failed: 0, skipped: 0 };
 
 function fire(options, body) {
+  if (inFlight >= MAX_IN_FLIGHT) {
+    counters.skipped++;
+    return;
+  }
   counters.sent++;
+  inFlight++;
+
+  let settled = false;
+  const done = (bucket) => {
+    if (settled) return; // an error after a response would double-count and desync inFlight
+    settled = true;
+    inFlight--;
+    counters[bucket]++;
+  };
+
   const req = http.request({ ...options, agent, host: TARGET.host, port: TARGET.port }, (res) => {
-    if (res.statusCode === 429) counters.shed++;
-    else if (res.statusCode >= 200 && res.statusCode < 400) counters.ok++;
-    else counters.failed++;
+    if (res.statusCode === 429) done('shed');
+    else if (res.statusCode >= 200 && res.statusCode < 400) done('ok');
+    else done('failed');
     res.resume(); // drain, or sockets are never released back to the pool
   });
-  req.on('error', () => counters.failed++);
+  req.on('error', () => done('failed'));
   req.setTimeout(10000, () => req.destroy());
   if (body) req.write(body);
   req.end();
@@ -118,7 +156,7 @@ startTicker('browse', sendBrowse);
 
 setInterval(() => {
   lastSecond = counters;
-  counters = { sent: 0, ok: 0, shed: 0, failed: 0 };
+  counters = { sent: 0, ok: 0, shed: 0, failed: 0, skipped: 0 };
 }, 1000);
 
 function docker(args) {
@@ -167,7 +205,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/status') {
-    return json(res, 200, { rates, lastSecond, containers: await containerStates() });
+    return json(res, 200, { rates, lastSecond, inFlight, containers: await containerStates() });
   }
 
   if (url.pathname === '/api/load' && req.method === 'POST') {

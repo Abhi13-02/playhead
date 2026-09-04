@@ -67,22 +67,22 @@
 
       <div class="slider">
         <label><span>Playback writes <span class="cap">(heartbeat — highest priority)</span></span><span class="val" id="v-write">0</span></label>
-        <input type="range" id="s-write" min="0" max="3000" step="25" value="0">
+        <input type="range" id="s-write" min="0" max="5000" step="50" value="0">
       </div>
       <div class="slider">
         <label><span>Resume reads <span class="cap">(mid priority)</span></span><span class="val" id="v-resume">0</span></label>
-        <input type="range" id="s-resume" min="0" max="3000" step="25" value="0">
+        <input type="range" id="s-resume" min="0" max="5000" step="50" value="0">
       </div>
       <div class="slider">
         <label><span>Browse reads <span class="cap">(shed first)</span></span><span class="val" id="v-browse">0</span></label>
-        <input type="range" id="s-browse" min="0" max="3000" step="25" value="0">
+        <input type="range" id="s-browse" min="0" max="5000" step="50" value="0">
       </div>
 
       <div class="presets">
         <button onclick="preset(0,0,0)">Idle</button>
         <button onclick="preset(400,200,80)">Normal</button>
         <button onclick="preset(1500,900,400)">Busy</button>
-        <button onclick="preset(3000,3000,3000)">Tentpole surge</button>
+        <button onclick="preset(5000,5000,5000)">Tentpole surge</button>
       </div>
 
       <div class="stats">
@@ -91,6 +91,11 @@
         <div class="stat"><div class="n" id="n-shed" style="color:var(--shed)">0</div><div class="k">429 shed</div></div>
         <div class="stat"><div class="n" id="n-failed" style="color:var(--bad)">0</div><div class="k">failed</div></div>
       </div>
+      <p class="hint" id="genwarn" style="margin:10px 0 0;display:none">
+        <b style="color:var(--shed)">Generator saturated.</b>
+        <span id="genwarn-text"></span>
+        This panel could not send them — not the service refusing them. Real benchmarks use k6.
+      </p>
     </div>
 
     <div class="card" style="margin-top:16px">
@@ -186,6 +191,11 @@ async function refresh() {
     $('n-ok').textContent = s.lastSecond.ok;
     $('n-shed').textContent = s.lastSecond.shed;
     $('n-failed').textContent = s.lastSecond.failed;
+
+    const skipped = s.lastSecond.skipped || 0;
+    $('genwarn').style.display = skipped > 0 ? 'block' : 'none';
+    $('genwarn-text').textContent =
+      `${skipped} req/s dropped before sending (${s.inFlight} in flight).`;
     for (const d of DEPS) {
       const dot = $('dot-' + d.key);
       dot.className = 'dot ' + (s.containers[d.key] || '');
