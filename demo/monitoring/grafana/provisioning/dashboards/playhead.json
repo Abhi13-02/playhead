@@ -75,55 +75,15 @@
     },
     {
       "id": 11,
-      "title": "Redis — up / down",
-      "description": "1 while Redis answers, 0 the moment it is killed. The app's own target stays up alongside it, which is the point: losing Redis is a degradation, not an outage.",
+      "title": "Redis hit rate",
+      "description": "Redis's own keyspace hit rate — the second cache tier, reached only for reads that Caffeine missed, so it reads differently from the local cache panel beside it. Goes flat when Redis is killed, because the circuit breaker stops calling it.",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short", "min": 0, "max": 1,
-          "custom": { "lineWidth": 2, "fillOpacity": 20, "lineInterpolation": "stepAfter" }
-        },
-        "overrides": []
-      },
-      "targets": [
-        { "expr": "redis_up", "legendFormat": "redis reachable" },
-        { "expr": "up{job=\"playhead-app\"}", "legendFormat": "app reachable" }
-      ]
-    },
-    {
-      "id": 12,
-      "title": "Redis — operations/sec",
-      "description": "Commands Redis is actually serving. Drops to nothing when the circuit breaker opens, because the breaker stops the app calling a dependency it knows is down.",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
-      "fieldConfig": { "defaults": { "unit": "ops" }, "overrides": [] },
-      "targets": [
-        { "expr": "rate(redis_commands_processed_total[$__rate_interval])", "legendFormat": "commands/sec" }
-      ]
-    },
-    {
-      "id": 13,
-      "title": "Redis — memory used",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
-      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
-      "targets": [
-        { "expr": "redis_memory_used_bytes", "legendFormat": "used" },
-        { "expr": "redis_memory_max_bytes", "legendFormat": "maxmemory (256 MB cap)" }
-      ]
-    },
-    {
-      "id": 14,
-      "title": "Redis — keyspace hit rate",
-      "description": "Redis's own hit rate, distinct from the Caffeine panel above: this is the second cache tier, hit only when the local one misses.",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 32 },
       "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 }, "overrides": [] },
       "targets": [
         {
-          "expr": "rate(redis_keyspace_hits_total[$__rate_interval]) / clamp_min(rate(redis_keyspace_hits_total[$__rate_interval]) + rate(redis_keyspace_misses_total[$__rate_interval]), 1)",
-          "legendFormat": "hit rate"
+          "expr": "rate(redis_keyspace_hits_total[$__rate_interval]) / (rate(redis_keyspace_hits_total[$__rate_interval]) + rate(redis_keyspace_misses_total[$__rate_interval]))",
+          "legendFormat": "redis"
         }
       ]
     },
@@ -131,7 +91,7 @@
       "id": 7,
       "title": "App instances up",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 40 },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 32 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
         { "expr": "sum(up{job=\"playhead-app\"})", "legendFormat": "instances" }
@@ -141,7 +101,7 @@
       "id": 8,
       "title": "In-flight write permits used",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 40 },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 32 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
         { "expr": "sum(admission_admitted_total{tier=\"PLAYBACK_WRITE\"})", "legendFormat": "writes admitted (total)" }
@@ -152,7 +112,7 @@
       "title": "Local cache misses (total)",
       "description": "Caffeine misses — the requests that had to go past the in-process cache to Redis or Postgres. Previously mislabelled as a circuit-breaker panel, which it never was: the breaker's state is only logged, not exported as a metric.",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 40 },
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 32 },
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
       "targets": [
         { "expr": "sum(cache_gets_total{result=\"miss\"})", "legendFormat": "cache misses (total)" }
@@ -162,7 +122,7 @@
       "id": 10,
       "title": "JVM heap used",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 40 },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 32 },
       "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
       "targets": [
         { "expr": "sum(jvm_memory_used_bytes{area=\"heap\"})", "legendFormat": "heap" }

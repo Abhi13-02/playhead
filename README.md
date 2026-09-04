@@ -49,15 +49,9 @@ preset — the `429`s land on reads, not on playback writes), **degraded reads**
 keeps succeeding via the Postgres fallback), and **buffered writes** (kill Postgres — writes still
 `202`, consumer lag climbs, then drains on recovery).
 
-Here is the Redis one, caught mid-outage — **`redis_up` drops to 0 while the app's own line stays
-at 1**, and requests keep being served the whole way through:
-
-![Grafana during a Redis outage — the Redis up/down panel shows Redis unreachable while the
-application stays reachable, read latency steps up as reads fall back to PostgreSQL, and the error
-rate stays flat at zero](docs/images/grafana-redis-outage.png)
-
-Measured across that kill and restart: **1,620 requests/sec sustained, 0 failed** — the degradation
-is a latency step, not an outage.
+Measured across a Redis kill and restart driven from the panel: **1,620 requests/sec sustained,
+0 failed** — reads fell back to PostgreSQL and the degradation showed up as a latency step, not an
+outage.
 
 It is deliberately separate from the service: nothing in `src/` knows it exists, and deleting
 `demo/` changes nothing about the system. See [demo/README.md](demo/README.md).

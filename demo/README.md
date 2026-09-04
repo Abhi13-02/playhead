@@ -64,18 +64,15 @@ So this panel drives requests itself, from Node, on a rate that can change mid-f
 few thousand requests/sec, which is enough to show behaviour but well short of the service's real
 ceiling. **Use k6 for numbers, use this for showing.**
 
-## Redis panels
+## The Redis panel
 
-`redis-exporter` (in `docker-compose.yml`) reports Redis's own view of itself, scraped as a separate
-Prometheus job. That separation is deliberate: when the chaos button kills Redis, its target goes
-down while the app's target stays up, and the dashboard shows both lines at once.
+One panel, **Redis hit rate**, sitting directly under the Caffeine one so the two cache tiers can be
+read against each other. Redis only sees the reads Caffeine missed, so the two rates are genuinely
+different numbers rather than the same thing measured twice.
 
-| Panel | Shows |
-|---|---|
-| Redis — up / down | `redis_up` against the app's own reachability. The whole degradation story in one graph. |
-| Redis — operations/sec | Commands Redis is serving. Falls to nothing once the circuit breaker opens. |
-| Redis — memory used | Against the 256 MB `maxmemory` cap. |
-| Redis — keyspace hit rate | The *second* cache tier — reached only when Caffeine misses, so it reads differently from the Caffeine panel. |
+It is fed by `redis-exporter` (in `docker-compose.yml`), scraped as its own Prometheus job — Redis's
+own view of itself, rather than the app's. The app does emit Lettuce client metrics, but they were
+not trustworthy enough to plot: `lettuce_active_seconds` reported 4 GETs totalling 9,804 seconds.
 
-Measured during a kill and restart at 1,620 req/s: **0 failed requests**, `redis_up` 1 → 0 → 1, and
-read latency stepping up rather than the service failing.
+Measured during a kill and restart at 1,620 req/s: **0 failed requests**, and read latency stepping
+up rather than the service failing.
