@@ -1,8 +1,10 @@
 package com.playhead.service;
 
 import java.util.EnumMap;
+import java.util.Locale;
 import java.util.Map;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import io.micrometer.core.instrument.Counter;
@@ -44,7 +46,21 @@ import io.micrometer.core.instrument.MeterRegistry;
 @Component
 public class AdmissionControl {
 
-    /** A traffic class, with the bucket sizing that encodes its priority. */
+    /**
+     * A traffic class, with the default bucket sizing that encodes its priority.
+     *
+     * <p>These defaults describe a replica with the whole host to itself, which is what the
+     * phase-2 measurements were taken on. They are <em>rates one instance can serve</em>, not a
+     * fleet-wide budget, so a replica given a fraction of the host needs a correspondingly smaller
+     * number — a replica capped at one core cannot serve 8,000 writes/sec no matter what the bucket
+     * says, and a bucket that never rejects turns overload into queueing and timeouts instead of a
+     * fast {@code 429}. That is the failure this made visible: capping a replica's CPU without
+     * resizing the tiers left admission control admitting roughly forty times what the replica
+     * could actually serve.
+     *
+     * <p>Overridable per deployment (see the constructor) precisely because the right number is a
+     * property of the instance's resources, not of the code.
+     */
     public enum Tier {
 
         PLAYBACK_WRITE(8000, 8000),
@@ -64,9 +80,20 @@ public class AdmissionControl {
     private final Map<Tier, Counter> admittedCounters = new EnumMap<>(Tier.class);
     private final Map<Tier, Counter> shedCounters = new EnumMap<>(Tier.class);
 
-    public AdmissionControl(MeterRegistry meterRegistry) {
+    /**
+     * @param rateOverrides per-tier requests/sec, keyed by lower-cased tier name
+     *                      ({@code playhead.admission.playback_write=700}). Absent keys keep the
+     *                      enum default.
+     */
+    public AdmissionControl(
+            MeterRegistry meterRegistry,
+            @Value("#{${playhead.admission:{:}}}") Map<String, Integer> rateOverrides) {
+
         for (Tier tier : Tier.values()) {
-            buckets.put(tier, new TokenBucket(tier.capacity, tier.refillTokensPerSecond));
+            Integer override = rateOverrides.get(tier.name().toLowerCase(Locale.ROOT));
+            long capacity = override != null ? override : tier.capacity;
+            double refill = override != null ? override : tier.refillTokensPerSecond;
+            buckets.put(tier, new TokenBucket(capacity, refill));
             admittedCounters.put(tier, Counter.builder("admission.admitted")
                     .description("Requests admitted, by priority tier")
                     .tag("tier", tier.name())

@@ -671,3 +671,77 @@ rather than picking silently:
 Recorded here because a benchmark that reports 0% shedding looks like success and is actually the
 protection being disabled — exactly the kind of number that must not be quoted without this
 context.
+
+---
+
+## D-032 · nginx was the system's real ceiling, not the application · `SETTLED`
+
+Investigating why load tests reported large numbers of refused connections turned up a
+misconfiguration in `nginx.conf` that had been capping the whole system since phase 7:
+
+- `worker_processes` was never set, so nginx ran its default of **one worker** on a 12-core host.
+- `worker_connections` was 4096, and **each proxied request consumes two** — one client-side, one
+  upstream. So the effective limit was roughly **2,000 concurrent requests for the entire system**.
+
+nginx logged `4096 worker_connections are not enough while connecting to upstream` about 1,500 times
+per run while the application behind it still had capacity. **Measurements taken in that state were
+reading this number, not the service.** Windows ephemeral ports were never the constraint — 49
+sockets in `TIME_WAIT` during a run that reported ~97,000 connection failures.
+
+Fixed to `worker_processes auto` (12 workers) and `worker_connections 16384`.
+
+**That fix immediately caused a second failure**, worth recording because it was not obvious: 12
+workers do not fit in the 64 MB `mem_limit` sized for one, and the kernel OOM-killed **273 workers**
+in a single run. Clients saw connection failures; nginx logged `upstream timed out while connecting
+to upstream`. Raised to 512 MB.
+
+Same load, one replica, before and after both fixes:
+
+| | before | after |
+|---|---|---|
+| connection failures | 169,135 | **365** |
+| write success | 8.9% | **35.5%** |
+| writes shed by admission control | 1% | **18%** |
+
+The last row is the important one: with the proxy no longer the bottleneck, the token bucket is
+reached and does its job. Overload now produces a fast `429` instead of queueing into timeouts.
+
+*Consequence for existing numbers:* results recorded between phase 7 and this fix understate the
+system. The phase-2 figures in BENCHMARKS.md predate nginx entirely (k6 hit the app directly) and
+are unaffected.
+
+---
+
+## D-033 · Per-replica CPU caps: right idea, not measurable on one machine · `SETTLED`
+
+Proposed as a way to make horizontal scaling visible: cap each replica's CPU so a replica cannot
+consume the whole host, leaving cores for the next one. It is exactly how an orchestrator runs a
+pod, and the reasoning is correct — an uncapped replica takes every core, so a second replica
+measures contention rather than capacity, which is what the phase-7 A/B recorded.
+
+Tried with `cpus: 1.0` and per-tier admission rates re-measured for a one-core replica (writes
+stayed clean to ~2,000/s, failing around 2,900/s).
+
+**It cannot be measured here, for a structural reason rather than a tuning one.** Four capped
+replicas, twelve nginx workers, three datastores and k6 all want the same twelve cores. Adding
+replicas takes CPU from the load generator and the kernel's network path, so the client fails faster
+than the extra replicas help:
+
+| | 1 replica | 4 replicas |
+|---|---|---|
+| write success | **35.5%** | 27.6% |
+| connection failures | 365 | 68,716 |
+
+The dominant client-side error was Windows' own `bind: the system lacked sufficient buffer space`.
+**A load generator sharing a host with the service it is scaling cannot measure that scaling.**
+
+*Reverted.* The cap existed only to enable a measurement this hardware cannot support, and it makes
+single-replica results worse than what BENCHMARKS.md reports.
+
+*Kept from the attempt, because each is independently correct:*
+- `-XX:MaxRAMPercentage=75`. A 768 MB container gave the JVM its default 25% — a 192 MB heap — and
+  the first run died with `OutOfMemoryError` and 100% failures. The default is only safe while the
+  container limit is generous.
+- Per-tier admission rates are now overridable per deployment (`PLAYHEAD_ADMISSION`). The right rate
+  is a property of the instance's resources, not of the code, which is the same observation D-031
+  makes about replica counts.

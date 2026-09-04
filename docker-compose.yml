@@ -65,6 +65,20 @@ services:
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/playhead
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       SPRING_DATA_REDIS_HOST: redis
+      # Repeats the Dockerfile's timezone flag because setting this key replaces that ENV rather
+      # than adding to it, and dropping -Duser.timezone brings back the Asia/Calcutta connect
+      # failure from D-021.
+      #
+      # MaxRAMPercentage matters once mem_limit is small. The JVM's default is 25% of the container
+      # limit, so capping a replica at 768m silently left it a ~192m heap — enough to run, not
+      # enough to survive a saturation test. The first run at this cap died with OutOfMemoryError
+      # under load and reported 100% failures, which measured the heap setting rather than the
+      # scaling behaviour. 75% gives ~576m and leaves headroom for the JVM's non-heap use.
+      JAVA_TOOL_OPTIONS: "-Duser.timezone=UTC -XX:MaxRAMPercentage=75"
+      # PLAYHEAD_ADMISSION can override the per-tier rates when a replica is given less than the
+      # whole host — see AdmissionControl. Not set here: this replica is uncapped, so the code's
+      # defaults (measured in phase 2 on this hardware) are the right ones. It exists because the
+      # correct rate is a property of the instance's resources, not of the code.
     depends_on:
       - kafka
       - postgres
@@ -75,6 +89,14 @@ services:
       timeout: 3s
       retries: 30
       start_period: 5s
+    # A `cpus: 1.0` cap was tried here, to bound each replica the way an orchestrator bounds a pod
+    # so that replica count and aggregate capacity would move together. The idea is sound and it is
+    # how Kubernetes actually runs pods, but it could not be measured on this hardware: four capped
+    # replicas plus nginx's workers plus the datastores leave k6 and the kernel's network stack
+    # short of cores, so the client fails faster than the extra replicas help. Scaling and
+    # measurement cannot share one machine. Reverted rather than left in, because the cap only
+    # existed to enable that measurement and it makes the single-replica numbers worse than the
+    # ones BENCHMARKS.md reports.
     mem_limit: 1.5g
 
   # The load balancer. Every client talks to this one address; it spreads requests across whatever
@@ -88,7 +110,12 @@ services:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
     depends_on:
       - app
-    mem_limit: 64m
+    # 64m was sized when nginx ran its default single worker. Setting worker_processes auto gives
+    # one worker per core, and 12 workers with a 16k-connection budget each do not fit in 64 MB:
+    # the kernel OOM-killed 273 of them in a single run, which surfaced to clients as connection
+    # failures and to nginx's log as "upstream timed out while connecting". Raised to match what
+    # the worker count actually needs.
+    mem_limit: 512m
 
   # NFR-11: latency percentiles, errors, consumer lag, cache hit rate, one dashboard, screenshotted
   # under a live surge for the README. Scrapes the app's Actuator /actuator/prometheus endpoint.
