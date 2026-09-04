@@ -115,12 +115,15 @@ any infrastructure exists. Everything after this makes the same result bigger.
 
 **Gate**
 - [x] Both runs recorded with real k6 output; the delta is real and explainable
-- [ ] Under overload, playback writes succeed > 99% while browse absorbs the shedding — **still
-      not verified.** Phase 5 added the read endpoints, but they are **not wired into admission
-      control**: the token bucket and in-flight limiter apply to the write path only, so there is
-      still no lower-priority tier being shed *instead of* writes. Verifying this needs the read
-      endpoints placed behind their own (lower) priority tier — carry to phase 6 or later, and do
-      not tick it until a run shows writes > 99% while reads absorb the shedding.
+- [ ] Under overload, playback writes succeed > 99% while browse absorbs the shedding — **read
+      endpoints now wired into `AdmissionControl` (own priority tiers), mechanism proven, exact
+      number not reached.** `admission.shed{tier=PLAYBACK_WRITE}` was **0** across every mixed-load
+      run — writes were never shed by the priority mechanism. Best measured `write_success`:
+      **89.32%**, short of >99% because of a real, separately-diagnosed limiter plus a
+      single-machine capacity ceiling (test rig, app, and Kafka/Postgres/Redis sharing one
+      laptop's CPU) — not the priority logic. Left honestly unticked rather than marked done at a
+      number not reached. Full detail: BENCHMARKS.md "Phase 2 gate closure", DECISIONS.md D-030,
+      ENGINEERING_LOG.md.
 - [x] Shed responses carry `429` + `Retry-After`; rejection reason is visible in metrics
 - [x] The surge result is reproducible on demand — Run A and Run B each reproduced twice (20k and
       50k targets) with consistent, explainable numbers.

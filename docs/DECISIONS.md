@@ -594,3 +594,41 @@ care around the load generator's `sequence = Date.now()` which can collide under
 *Rejected:* an idempotency/dedup table keyed by message offset (heavier than the problem);
 transactional outbox / exactly-once Kafka semantics (large architectural change for a 0.4%
 cosmetic effect on an append-only log).
+
+---
+
+## D-030 · Priority tiering proven; the >99% write-success gate stays open, honestly · `SETTLED`
+
+Phase 2 shipped a `TokenBucket` on the write path only; the read endpoints phase 5 added had no
+limit at all, so the roadmap's central claim — writes protected, reads shed first — had never been
+demonstrated. Built `AdmissionControl` (3 tiers, sized 80/15/5 against the phase-2 write ceiling)
+and `load/mixed.js` to offer all three at once. Full run-by-run narrative in
+[ENGINEERING_LOG.md](ENGINEERING_LOG.md).
+
+**What was proven, unambiguously:** `admission.shed{tier=PLAYBACK_WRITE}` was **0** across every
+run. Writes were never shed by the priority mechanism, in any of the four runs, at any offered
+load. The design works exactly as intended.
+
+**What was not reached:** the gate's literal `>99%` write success. Best measured result was
+**89.32%**. Diagnosis, in order:
+1. First failure mode: a pre-existing, unrelated 200-permit `Semaphore` (bounding in-flight Kafka
+   sends) was shedding on its own — not the new bucket. Resized to 1,000 using a real measurement
+   (Little's Law against a measured p95 Kafka-confirm wait), which raised write success from
+   49.65% to 63.90%.
+2. Second failure mode, found after lowering offered load to something the test rig could
+   honestly sustain: real CPU contention on one machine simultaneously running the load generator,
+   the app, and Kafka/Postgres/Redis in Docker — surfaced as Redis calls missing their 50 ms
+   budget from slowness (not an outage) and the OS refusing TCP connections outright at peak.
+3. Resizing the semaphore further (1,000 → 2,000) was tried and made the result *worse* (87.20%,
+   with the door shedding zero) — proof the remaining ceiling is machine capacity, not limiter
+   sizing.
+
+**Decision: leave the gate item honestly unticked rather than mark it done at a number the system
+did not reach.** ROADMAP.md phase 2 records 89.32% with the reasoning above, not a false
+checkmark. The mechanism this gate exists to prove (priority-based shedding under overload) is
+proven; the specific throughput number is bounded by test-rig capacity, not application logic, and
+would need either a smaller offered load (the measurement, not the system, would then be the thing
+that changed) or infrastructure beyond one laptop to close cleanly.
+
+*Rejected:* keep resizing the semaphore in hope of a passing run — run 4 already showed more
+permits make the result worse, not better, once the bottleneck moved to the OS/CPU layer.

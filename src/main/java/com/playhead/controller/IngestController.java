@@ -1,7 +1,7 @@
 package com.playhead.controller;
 
 import com.playhead.domain.Heartbeat;
-import com.playhead.service.TokenBucket;
+import com.playhead.service.AdmissionControl;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -18,18 +18,36 @@ public class IngestController {
     private static final String TOPIC = "heartbeats";
 
     private final KafkaTemplate<String, Object> kafkaTemplate;
-    // Sized against the measured ceiling in BENCHMARKS.md Run A (~10,000-13,000 req/s): capped
-    // comfortably below it so admitted traffic never approaches the danger zone.
-    private final TokenBucket writeTokenBucket = new TokenBucket(8000, 8000); // capacity 8000, refills 8000/sec
-    private final Semaphore inFlightPermits = new Semaphore(200); // backlog safety net, not the primary limiter
+    private final AdmissionControl admissionControl;
 
-    public IngestController(KafkaTemplate<String, Object> kafkaTemplate) {
+    // Backlog safety net, not the primary limiter. This bounds how many requests can be *in flight*
+    // waiting on Kafka at once, which is a different failure from too many arriving per second —
+    // that one is the token bucket's job, in AdmissionControl. Deliberately not merged.
+    //
+    // Sized from measurement, not guessed: a write-only k6 run at the 7,000/s target admitted by
+    // AdmissionControl's PLAYBACK_WRITE bucket showed a real per-heartbeat Kafka confirm wait of
+    // p95 26 ms (kafka.producer.record.queue.time + kafka.producer.request.latency, actuator
+    // metrics). By Little's Law that means ~182 heartbeats are in flight at once even with nothing
+    // else competing for CPU — the old value of 200 had effectively zero headroom, which is why it
+    // alone (not the bucket) produced every 429 in that run.
+    //
+    // 1,000 (first resize) still shed 25,675 writes (7.1%) under the full mixed surge, because
+    // reads sharing the same CPU push the real wait time higher than the isolated 26 ms. Doubling
+    // to 2,000 was tried and measured worse (87.20% success vs 89.32%, with the door itself
+    // shedding *zero* — every remaining loss moved to the OS refusing the connection outright).
+    // That is the real signal: past this point the ceiling is total machine capacity (this one
+    // laptop running the load generator, the app, and Kafka/Postgres/Redis together), not this
+    // door's size. 1,000 kept as the better of the two measured values (ENGINEERING_LOG.md).
+    private final Semaphore inFlightPermits = new Semaphore(1000);
+
+    public IngestController(KafkaTemplate<String, Object> kafkaTemplate, AdmissionControl admissionControl) {
         this.kafkaTemplate = kafkaTemplate;
+        this.admissionControl = admissionControl;
     }
 
     @PostMapping("/v1/playback/heartbeat")
     public ResponseEntity<Void> receiveHeartbeat(@Valid @RequestBody Heartbeat heartbeat) {
-        if (!writeTokenBucket.tryConsume()) {
+        if (!admissionControl.tryAdmit(AdmissionControl.Tier.PLAYBACK_WRITE)) {
             return ResponseEntity.status(429)
                     .header("Retry-After", "1")
                     .build();

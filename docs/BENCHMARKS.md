@@ -147,6 +147,49 @@ http_reqs..........: 1079771  10283.049354/s
 
 ---
 
+## Phase 2 gate closure — priority-tiered admission control, mixed load
+
+*Recorded 2026-09-04. Script: [`load/mixed.js`](../load/mixed.js). All three tiers offered at once,
+same 15s/60s/30s curve shape. Full narrative and the intermediate runs that led here are in
+[ENGINEERING_LOG.md](ENGINEERING_LOG.md); see [DECISIONS.md](DECISIONS.md) D-030.*
+
+Closes phase 2's last open gate item: writes protected while reads absorb the shedding.
+
+| Metric | Value |
+|---|---|
+| Offered load | 7,000 write/s, 3,000 resume/s, 1,000 browse/s (11,000/s vs 10,000/s admission ceiling) |
+| `write_success` | **89.32%** (335,849 / 376,006) — target was >99%, not reached |
+| `admission.shed{tier=PLAYBACK_WRITE}` | **0** in every run — the bucket never shed a write |
+| `resume_shed` / `browse_shed` | 20.00% / 31.76% — reads absorbed the overload as designed |
+
+**Priority tiering is fully proven: writes were never shed by the mechanism built to protect them,
+in any run.** The 89.32% figure is short of the gate's literal >99% because of a real,
+separately-diagnosed limiter (the Kafka in-flight `Semaphore`, unrelated to the priority tiers) and
+ultimately a single-machine capacity ceiling — this one laptop hosting the load generator, the app,
+and Kafka/Postgres/Redis simultaneously. See ENGINEERING_LOG.md for the four runs that isolated
+this, including the resize that made it *worse* (2,000 permits → 87.20%, with the door shedding
+zero), which is the evidence that ruled out the door's size as the remaining cause.
+
+### Raw output — final run (1,000-permit door, 11,000/s offered)
+
+```
+write_success..................: 89.32% 335849 out of 376006
+resume_shed.....................: 20.00% 31704 out of 158473
+browse_shed.....................: 31.76% 18318 out of 57661
+
+✗ write 202
+  ↳  89% — ✓ 335849 / ✗ 40157
+✗ write 429 (shed)
+  ↳  6% — ✓ 25675 / ✗ 350331
+✗ write other (real error)
+  ↳  3% — ✓ 14482 / ✗ 361524
+
+http_req_duration..............: avg=110.07ms min=0s med=7.14ms max=10.58s p(90)=82.86ms p(95)=218.87ms
+http_reqs......................: 592140 5631.187912/s
+```
+
+---
+
 # Phase 5 — the read path
 
 *Recorded 2026-09-04. Script: [`load/reads.js`](../load/reads.js). Same curve shape as the

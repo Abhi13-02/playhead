@@ -271,10 +271,79 @@ tolerates the duplication and the constraint would need care around the load tes
 
 ---
 
+## Phase 2 gate closure — priority-tiered admission control under a mixed load
+
+Phase 2's last open gate item: *"under overload, playback writes succeed > 99% while browse
+absorbs the shedding — not verified."* The write path had its own `TokenBucket`; the read
+endpoints added in phase 5 had no limit at all, so nothing could prove writes were shielded by
+letting reads take the loss instead. Built `AdmissionControl` (3 tiers — `PLAYBACK_WRITE` 8000/s,
+`RESUME_READ` 1500/s, `BROWSE_READ` 500/s — sized 80/15/5 against the phase-2 write-only ceiling),
+put both read endpoints behind it, and wrote `load/mixed.js` to offer all three tiers at once.
+
+### Run 1 — first mixed run, 20,000/s offered (2x the 10,000/s admission ceiling)
+
+```
+write_success..................: 49.65% 99182 out of 199761
+resume_shed.....................: 24.93%
+browse_shed.....................: 39.42%
+```
+
+`admission.shed{tier=PLAYBACK_WRITE}` was **0** — the priority logic worked exactly as designed,
+every shed landed on a read tier. But write success was nowhere near 99%. Root cause was not the
+new bucket: `IngestController`'s pre-existing 200-permit `Semaphore` (bounding in-flight Kafka
+sends, unrelated to the new tiers) was shedding on its own. Measured why: a write-only k6 run at
+7,000/s (the mixed run's write target) showed a real Kafka confirm wait of **p95 26 ms**
+(`kafka.producer.record.queue.time` + `kafka.producer.request.latency`, actuator metrics). By
+Little's Law that is ~182 requests in flight at once even with nothing else competing for CPU — the
+old value of 200 had effectively zero headroom.
+
+### Run 2 — semaphore resized 200 → 1,000, same 20,000/s offered
+
+```
+write_success..................: 63.90% 120240 out of 188169
+```
+
+Real improvement, still short. The new limiter was CPU contention itself: Redis calls were missing
+their 50 ms budget from **slowness under shared CPU, not an outage** (2,645
+`RedisCommandTimeoutException`s; `docker ps` showed Redis healthy throughout), and the OS began
+refusing new TCP connections outright during the busiest seconds — k6, the app, and
+Kafka/Postgres/Redis in Docker were all contending for the same cores on one machine.
+
+### Run 3 — offered load lowered to a level this one machine can honestly generate and serve
+
+Read peaks cut from 9,000/1,000 down to 3,000/1,000 (writes left at 7,000, unchanged — they were
+never the problem). Total offered 11,000/s, a modest overload against the 10,000/s ceiling instead
+of 2x.
+
+```
+write_success..................: 89.32% 335849 out of 376006
+```
+
+### Run 4 — one more resize attempt, semaphore 1,000 → 2,000
+
+```
+write_success..................: 87.20% 327752 out of 375850   (worse)
+write 429 (shed).................: 0 out of 375850              (the door shed nothing)
+```
+
+Widening the door further did not help — it made the result slightly worse, and the door itself
+stopped rejecting anything. That is the tell: every remaining loss had moved to the OS refusing the
+connection outright, which is a **single-machine capacity ceiling**, not a limiter sized wrong.
+Reverted to 1,000, the better of the two measured values.
+
+### Result
+
+**Priority tiering fully proven:** `admission.shed{tier=PLAYBACK_WRITE}` was **0** in every run —
+writes were never shed by the mechanism built to protect them. **The phase-2 gate's literal number
+(>99%) was not reached — 89.32% is the honest, final, measured result** on a single machine
+simultaneously hosting the load generator, the app, and Kafka/Postgres/Redis. See D-030.
+
+---
+
 ## Drill 2 — Postgres killed under load
 
-Pending.
+See the full write-up above.
 
 ## Drill 3 — consumer stalled, lag recovery
 
-Pending.
+See the full write-up above.
