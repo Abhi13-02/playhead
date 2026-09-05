@@ -10,18 +10,47 @@
     --ok: #3fb950; --shed: #d29922; --bad: #f85149; --accent: #58a6ff;
   }
   * { box-sizing: border-box; }
+
+  /*
+   * One scrollbar, not two. The page used to scroll *and* the Grafana iframe scrolled inside it,
+   * because the iframe had a fixed height="1000" taller than the viewport. Locking the shell to the
+   * viewport height and letting only the two columns scroll internally means the browser never
+   * gives the document its own scrollbar, and the iframe is sized to its container rather than to a
+   * guess.
+   */
+  html, body { height: 100%; overflow: hidden; }
   body {
     margin: 0; background: var(--bg); color: var(--text);
     font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+    display: flex; flex-direction: column;
   }
   header {
     padding: 14px 20px; border-bottom: 1px solid var(--line);
-    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap; flex: none;
   }
   header h1 { font-size: 16px; margin: 0; font-weight: 650; }
   header .sub { color: var(--dim); font-size: 12px; }
-  .wrap { padding: 20px; display: grid; gap: 16px; grid-template-columns: 380px 1fr; align-items: start; }
-  @media (max-width: 1100px) { .wrap { grid-template-columns: 1fr; } }
+  #collapse {
+    margin-left: auto; display: flex; align-items: center; gap: 7px;
+  }
+
+  .wrap {
+    padding: 20px; display: grid; gap: 16px;
+    grid-template-columns: 380px 1fr; align-items: stretch;
+    flex: 1; min-height: 0;                 /* min-height:0 lets the grid children actually shrink */
+    transition: grid-template-columns .18s ease;
+  }
+  /* Collapsed: the sidebar column goes to zero and the graphs take the full width. */
+  .wrap.collapsed { grid-template-columns: 0 1fr; }
+  .wrap.collapsed > .side { opacity: 0; pointer-events: none; }
+
+  .side { overflow-y: auto; min-height: 0; transition: opacity .18s ease; }
+  .graphs-col { min-height: 0; display: flex; }
+
+  @media (max-width: 1100px) {
+    .wrap { grid-template-columns: 1fr; }
+    .wrap.collapsed { grid-template-columns: 1fr; }
+  }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
   .card h2 { margin: 0 0 4px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); font-weight: 600; }
   .card .hint { color: var(--dim); font-size: 12px; margin: 0 0 14px; }
@@ -38,17 +67,23 @@
   button:hover { border-color: #3d444d; background: #262c34; }
   button.danger { color: var(--bad); }
   button.go { color: var(--ok); }
-  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 4px; }
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; margin-top: 4px; }
   .stat { background: #0f141a; border: 1px solid var(--line); border-radius: 8px; padding: 10px; text-align: center; }
-  .stat .n { font-size: 20px; font-weight: 650; font-variant-numeric: tabular-nums; }
-  .stat .k { font-size: 10.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .05em; margin-top: 2px; }
+  .stat .n { font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .stat .k { font-size: 9.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; margin-top: 2px; }
+  .scale-row { display: flex; align-items: center; gap: 10px; }
+  .scale-n { font-size: 30px; font-weight: 680; font-variant-numeric: tabular-nums; color: var(--accent); min-width: 40px; text-align: center; }
+  .scale-row button { font-size: 17px; line-height: 1; padding: 6px 13px; }
+  .scale-row button:disabled { opacity: .35; cursor: not-allowed; }
   .dep { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--line); }
   .dep:last-child { border-bottom: 0; }
   .dep .name { display: flex; align-items: center; gap: 9px; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); }
   .dot.running { background: var(--ok); }
   .dot.exited { background: var(--bad); }
-  iframe { width: 100%; border: 0; border-radius: 10px; background: var(--panel); display: block; }
+  /* Fills its column instead of carrying a hard-coded height taller than the viewport, which is
+     what produced the second scrollbar. */
+  iframe { width: 100%; height: 100%; border: 0; border-radius: 10px; background: var(--panel); display: block; }
   .log { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11.5px; color: var(--dim); margin-top: 10px; white-space: pre-wrap; max-height: 90px; overflow-y: auto; }
 </style>
 </head>
@@ -56,11 +91,12 @@
 
 <header>
   <h1>Playhead — Demo Control Panel</h1>
-  <span class="sub">drive load · break dependencies · watch the graphs respond</span>
+  <span class="sub">drive load · break dependencies · scale · watch the graphs respond</span>
+  <button id="collapse" onclick="toggleSidebar()"><span id="collapse-icon">◀</span> <span id="collapse-text">Hide controls</span></button>
 </header>
 
-<div class="wrap">
-  <div>
+<div class="wrap" id="wrap">
+  <div class="side">
     <div class="card">
       <h2>Traffic</h2>
       <p class="hint">Requests/sec sent to the service, live. Changes take effect immediately.</p>
@@ -88,7 +124,8 @@
       <div class="stats">
         <div class="stat"><div class="n" id="n-sent">0</div><div class="k">sent/s</div></div>
         <div class="stat"><div class="n" id="n-ok" style="color:var(--ok)">0</div><div class="k">ok</div></div>
-        <div class="stat"><div class="n" id="n-shed" style="color:var(--shed)">0</div><div class="k">429 shed</div></div>
+        <div class="stat" title="Shed by nginx — the fleet-wide ceiling, before the request ever reaches a container"><div class="n" id="n-shed-nginx" style="color:var(--shed)">0</div><div class="k">shed nginx</div></div>
+        <div class="stat" title="Shed by the application's own token bucket — what one container can serve"><div class="n" id="n-shed-app" style="color:var(--shed)">0</div><div class="k">shed app</div></div>
         <div class="stat"><div class="n" id="n-failed" style="color:var(--bad)">0</div><div class="k">failed</div></div>
       </div>
       <p class="hint" id="genwarn" style="margin:10px 0 0;display:none">
@@ -99,6 +136,19 @@
     </div>
 
     <div class="card" style="margin-top:16px">
+      <h2>Replicas</h2>
+      <p class="hint">The same <code>docker compose --scale</code> lever the pre-scaling controller
+        pulls on a schedule — here by hand. Watch the ceiling hold: nginx enforces the fleet limit,
+        so adding replicas raises served throughput without raising the ceiling.</p>
+      <div class="scale-row">
+        <button id="scale-down" onclick="scale(-1)">−</button>
+        <div class="scale-n" id="n-replicas">–</div>
+        <button id="scale-up" onclick="scale(1)">+</button>
+        <span class="cap" id="scale-note" style="color:var(--dim);font-size:11.5px">app containers running</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
       <h2>Chaos</h2>
       <p class="hint">Kill a dependency and watch the read path fall back, the breaker trip, or Kafka buffer the writes.</p>
       <div id="deps"></div>
@@ -106,8 +156,8 @@
     </div>
   </div>
 
-  <div class="card" style="padding:10px">
-    <iframe id="graphs" src="http://localhost:3000/d/playhead-surge/playhead-surge-overview?orgId=1&from=now-5m&to=now&refresh=5s&kiosk" height="1000"></iframe>
+  <div class="card graphs-col" style="padding:10px">
+    <iframe id="graphs" src="http://localhost:3000/d/playhead-surge/playhead-surge-overview?orgId=1&from=now-5m&to=now&refresh=5s&kiosk"></iframe>
   </div>
 </div>
 
@@ -183,14 +233,68 @@ function syncSliders(serverRates) {
   }
 }
 
+// Sidebar collapse. The graphs iframe is sized by its container, so widening the column is enough —
+// nothing needs to be told to redraw.
+let collapsed = false;
+function toggleSidebar() {
+  collapsed = !collapsed;
+  $('wrap').classList.toggle('collapsed', collapsed);
+  $('collapse-icon').textContent = collapsed ? '▶' : '◀';
+  $('collapse-text').textContent = collapsed ? 'Show controls' : 'Hide controls';
+}
+
+// Replica scaling. Buttons are disabled while a scale is in flight: `docker compose up --scale`
+// takes several seconds to bring a container to healthy, and queued clicks would race it.
+let scaling = false;
+let replicas = null;
+let maxReplicas = 4;
+
+async function scale(delta) {
+  if (scaling || replicas === null) return;
+  const target = replicas + delta;
+  if (target < 1 || target > maxReplicas) return;
+
+  scaling = true;
+  updateScaleButtons();
+  log(`scaling to ${target} replica${target === 1 ? '' : 's'} ...`);
+  try {
+    const res = await fetch('/api/scale', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ replicas: target }),
+    });
+    log(res.ok ? `scaled to ${target}` : `scale to ${target} FAILED`);
+  } catch (e) {
+    log(`scale to ${target} FAILED`);
+  } finally {
+    scaling = false;
+    refresh();
+  }
+}
+
+function updateScaleButtons() {
+  $('scale-down').disabled = scaling || replicas === null || replicas <= 1;
+  $('scale-up').disabled = scaling || replicas === null || replicas >= maxReplicas;
+  $('scale-note').textContent = scaling
+    ? 'scaling — waiting for healthy ...'
+    : `app container${replicas === 1 ? '' : 's'} running (max ${maxReplicas})`;
+}
+
 async function refresh() {
   try {
     const s = await (await fetch('/api/status')).json();
     syncSliders(s.rates);
     $('n-sent').textContent = s.lastSecond.sent;
     $('n-ok').textContent = s.lastSecond.ok;
-    $('n-shed').textContent = s.lastSecond.shed;
+    $('n-shed-nginx').textContent = s.lastSecond.shedNginx;
+    $('n-shed-app').textContent = s.lastSecond.shedApp;
     $('n-failed').textContent = s.lastSecond.failed;
+
+    if (typeof s.replicas === 'number') {
+      replicas = s.replicas;
+      maxReplicas = s.maxReplicas || maxReplicas;
+      $('n-replicas').textContent = s.replicas;
+      updateScaleButtons();
+    }
 
     const skipped = s.lastSecond.skipped || 0;
     $('genwarn').style.display = skipped > 0 ? 'block' : 'none';

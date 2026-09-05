@@ -909,3 +909,63 @@ A request rejected at nginx never occupies a Tomcat thread, a connection, or a J
 at 1,500 VUs made the same point destructively: with the app absorbing everything, responses
 averaged **4.23 s** and k6 could only achieve 296 r/s of its 2,000 r/s target — the load generator
 was measuring queueing, not capacity.
+
+---
+
+## D-036 · Prometheus discovers replicas by DNS; nginx shedding is reported outside Prometheus · `SETTLED`
+
+The monitoring stack was silently wrong at more than one replica, which is the only replica count
+the project's headline result cares about.
+
+**`static_configs: ["app:8080"]` is one target whose address changes between scrapes.** Compose
+registers one A record per replica and Docker's embedded DNS round-robins them, so Prometheus was
+sampling a *different random replica* every 5 s. Measured: a series that should collect ~36 samples
+in three minutes collected **13** — almost exactly one third, matching the three replicas it was
+rotating across.
+
+Consequences, all observed rather than reasoned about:
+
+- **Counters are per-replica, so hopping between them reads as a counter reset** and every
+  `rate()` on the dashboard was wrong. With traffic offered at 300 write/s the graph showed 35.9.
+- Gauges flipped between replicas and series went stale, which is why the **Kafka consumer-lag panel
+  read `NO DATA`** despite the metric being present on all three replicas.
+- **`sum(up{job="playhead-app"})` reported 1 while 3 replicas ran**, so the instance-count panel
+  could never show a pre-scale — the one thing phase 7 exists to demonstrate.
+
+**Decision: `dns_sd_configs` with `type: A`, `refresh_interval: 5s`.** One target per replica, each
+with its own `instance` label, so counters stay monotonic per series and `sum(up{...})` is a true
+replica count. Re-resolving every 5 s means replicas a pre-scale adds appear within one interval.
+Verified against a clean TSDB: **3 targets, `sum(up) = 3`, 3 replicas running.**
+
+**Two panels were also measuring the wrong thing.**
+
+*`Request rate by status`* used `sum(rate(...{status="202"})) or sum(rate(...{status="200"}))`.
+PromQL's `or` discards the right operand whenever the left has samples, so **every read disappeared
+from the graph the moment any write traffic existed**. Measured: panel 35.7 against a true 82.4.
+Now `status=~"200|202"`; after the fix, 865.2 = 326.2 writes + 546.3 reads.
+
+*`In-flight write permits used`* was wired to `admission_admitted_total`, a cumulative counter that
+only ever climbs (3,859 and rising) — it could never fall and so could never indicate saturation,
+which is the only reason to plot a permit count. `IngestController` now registers a real gauge,
+`playhead.ingest.inflight.permits`, reporting `PERMITS - availablePermits()`. Observed rising and
+falling under load (8 → 1 → 0).
+
+**nginx shedding is deliberately not in Prometheus, and that limitation is stated rather than
+hidden.** D-035 made nginx the layer that sheds first and hardest, and stock nginx cannot export it:
+`stub_status` is not Prometheus format and carries only connection and request totals, with no
+per-zone `limit_req` counter — those rejections exist only as error-log lines. Exporting them would
+need commercial nginx Plus, the third-party VTS module (absent from `nginx:alpine`), or a
+log-scraping sidecar, none of which earns a container in a demo harness.
+
+So the split is explicit rather than implied: Grafana's panel is retitled **"Admission control — shed
+rate by tier (app layer)"** with a description saying where the rest went, and the demo control panel
+reports the two layers side by side. It can do that honestly because it sees every response — an
+nginx `429` carries nginx's HTML error body, an application `429` has an empty one. Measured with
+browse offered at 900 r/s against the 500 r/s ceiling: **~350/s shed by nginx, 0 by the app**,
+cross-checked against 19,458 `limiting requests` lines in nginx's error log.
+
+*Rejected:* reporting the replica count from Prometheus in the demo panel. Prometheus reports what it
+can *scrape*, which is a question about service discovery — and it was answering 1 while 3 ran.
+Docker is the authority on how many containers exist, so the panel asks it directly. The two numbers
+being independently sourced is the point: if they disagree again, that disagreement is itself the bug
+worth seeing.

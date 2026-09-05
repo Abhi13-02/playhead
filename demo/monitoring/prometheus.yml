@@ -2,10 +2,34 @@ global:
   scrape_interval: 5s
 
 scrape_configs:
+  # DNS service discovery, not a static target, and the distinction is not cosmetic.
+  #
+  # Compose registers one A record per replica under the service name `app`, and Docker's embedded
+  # DNS round-robins them. A `static_configs` entry of ["app:8080"] is therefore ONE target whose
+  # address changes between scrapes: Prometheus samples a different random replica each time. That
+  # corrupts the whole dashboard the moment a second replica exists —
+  #
+  #   - counters differ per replica, so hopping between them looks like a counter reset and every
+  #     rate() goes wrong;
+  #   - gauges flip between replicas and series go stale, which is why the Kafka consumer-lag panel
+  #     read NO DATA;
+  #   - sum(up{job="playhead-app"}) reports 1 no matter how many replicas are running, so the
+  #     instance-count panel could never show a pre-scale.
+  #
+  # Measured before the fix: a series that should get ~36 samples in 3 minutes at a 5 s interval got
+  # 13 — almost exactly one third, matching the three replicas it was round-robining across.
+  #
+  # An A-record lookup instead returns every replica, and Prometheus creates one target per address,
+  # each with its own `instance` label. Counters stay per-replica and monotonic, `sum(up{...})` is a
+  # true replica count, and re-resolving every 5 s means replicas that a pre-scale adds are picked
+  # up within one interval rather than at the next Prometheus restart.
   - job_name: playhead-app
     metrics_path: /actuator/prometheus
-    static_configs:
-      - targets: ["app:8080"]
+    dns_sd_configs:
+      - names: ["app"]
+        type: A
+        port: 8080
+        refresh_interval: 5s
 
   # Redis's own metrics. Kept as a separate job because it has a separate failure mode: when the
   # chaos button kills Redis this target goes down while the app's target stays up, which is
@@ -13,3 +37,19 @@ scrape_configs:
   - job_name: redis
     static_configs:
       - targets: ["redis-exporter:9121"]
+
+  # There is deliberately NO nginx job here, and that is a limitation worth stating rather than
+  # papering over.
+  #
+  # D-035 moved the fleet-wide rate limit to nginx, so nginx is now the layer that sheds first and
+  # hardest — and none of that shedding reaches Prometheus. Stock nginx cannot report it: its
+  # `stub_status` page is not Prometheus format and carries only connection and request totals, with
+  # no per-zone `limit_req` rejection counter anywhere in it. Those rejections exist only as lines in
+  # the error log. Counting them would need the commercial nginx Plus, a third-party VTS module not
+  # present in nginx:alpine, or a log-scraping sidecar — none of which is worth a container in a
+  # demo harness.
+  #
+  # So the split is explicit: Grafana's admission panel is titled as the APP layer only, and the
+  # demo control panel reports nginx shedding separately, which it can do honestly because it sees
+  # every response — an nginx 429 carries nginx's HTML error body, an application 429 has an empty
+  # body, so the two are told apart at the client.
