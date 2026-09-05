@@ -233,7 +233,9 @@ story far more cheaply. The k8s version is phase 8, and optional.
       throughput 2,517 → 1,993 req/s, p95 1.18 s → 14.94 s — because three JVMs share one laptop's
       cores. Horizontal scaling cannot add hardware that is not there. The A/B also exposed
       **D-031**: per-instance token buckets multiply by replica count, so scaling up silently
-      disabled admission control (0.00% shedding). Left open with trade-offs stated.
+      disabled admission control (0.00% shedding). **Since fixed** — the fleet-wide ceiling moved to
+      nginx, the only component of which exactly one exists, and now holds at 532 → 519 req/s across
+      1 and 3 replicas instead of collapsing (D-035).
 
 ## Phase 8 — Polish · *NFR-11, NFR-13*
 

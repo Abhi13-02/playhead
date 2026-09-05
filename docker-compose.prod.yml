@@ -1,0 +1,47 @@
+# Production deployment shape. Overlay, not a replacement:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# docker-compose.yml alone stays uncapped, because that is the configuration every number in
+# BENCHMARKS.md was measured on. Capping the base file would leave the published results describing
+# a setup that no longer exists. This file is the deployment shape; that one is the measurement
+# shape (D-035).
+#
+# ---------------------------------------------------------------------------------------------
+# THE NUMBERS BELOW ARE NOT MEASURED. They are proportional estimates, and are labelled as such
+# deliberately.
+#
+# D-033 established that this hardware cannot honestly measure a capped, multi-replica
+# configuration: the load generator, the app replicas and the datastores share one machine, so the
+# client starves before the extra replicas help, and the run measures the client. Producing real
+# numbers for this file needs the load generator on separate hardware from the service. Until that
+# exists, these are estimates and no benchmark claim is made from them.
+# ---------------------------------------------------------------------------------------------
+
+services:
+  app:
+    # Bounds a replica the way an orchestrator bounds a pod, so that replica count and aggregate
+    # capacity move together. This is what makes per-instance limits meaningful regardless of which
+    # host a container lands on — a 2-core container behaves the same whether it is alone on a box
+    # or sharing one, which is the property that makes scheduling irrelevant to the sizing below.
+    cpus: 2.0
+    mem_limit: 1g
+
+    environment:
+      # Resized for the cap, and this resizing is mandatory rather than optional. From
+      # AdmissionControl's own contract: capping a replica's CPU *without* resizing the tiers left
+      # admission control admitting roughly forty times what the replica could actually serve, which
+      # converts overload into queueing and timeouts instead of a fast 429.
+      #
+      # Derivation: the enum defaults (8000/1500/500) were measured on an uncapped replica with all
+      # 12 cores of this host available. 2 cores is one sixth of that, so each tier is scaled by
+      # 1/6 and rounded down. Proportional CPU scaling is an approximation — it assumes throughput
+      # is CPU-bound and scales linearly, and neither is exactly true — which is why these are
+      # estimates awaiting measurement, not published figures.
+      PLAYHEAD_ADMISSION: "{playback_write:1300,resume_read:250,browse_read:85}"
+
+      # 1g with MaxRAMPercentage=75 gives roughly a 750m heap. The base file's comment records why
+      # this flag is not optional: the JVM's default is 25% of the container limit, so an earlier
+      # 768m cap silently left a ~192m heap and the first run under load died with OutOfMemoryError
+      # at 100% failures — measuring the heap setting rather than the scaling behaviour.
+      JAVA_TOOL_OPTIONS: "-Duser.timezone=UTC -XX:MaxRAMPercentage=75"

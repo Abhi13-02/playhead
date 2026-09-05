@@ -745,3 +745,167 @@ single-replica results worse than what BENCHMARKS.md reports.
 - Per-tier admission rates are now overridable per deployment (`PLAYHEAD_ADMISSION`). The right rate
   is a property of the instance's resources, not of the code, which is the same observation D-031
   makes about replica counts.
+
+---
+
+## D-034 · `popular-now` reverses SPEC §3's "no trending" — scoped to a `BROWSE_READ` demo, not analytics · `SETTLED`
+
+SPEC v2 §3 explicitly excluded "trending, top-K, or unique-viewer counting" as out of scope, and
+D-011/D-007 already rejected hand-built sketch structures (Count-Min, HyperLogLog) for that reason.
+This decision does not reopen either — no sketch structure is used, and the feature exists only to
+give `BROWSE_READ` a second, concrete endpoint to shed under DIFF-3, not as an analytics feature in
+its own right.
+
+**What it is:** `GET /v1/browse/popular-now` — the top 20 titles by heartbeat count over the last
+15 minutes. Counts live only in Redis, one sorted set per minute (`popular:<yyyyMMddHHmm>`,
+`ZINCRBY` per heartbeat, natural per-key expiry after 20 minutes). Reading unions the last 15
+per-minute keys and takes the top 20 — the union is what turns fixed buckets into a sliding window,
+since a single un-bucketed counter can grow but never forget what should fall out of the window.
+
+**Deliberately not exact:** the count is heartbeats, not distinct viewers (one viewer ≈ 6
+heartbeats/minute). Every title is off by the same constant factor, so the *ranking* — the only
+thing this endpoint promises — is unaffected. Not sound enough for billing or studio-facing
+viewership figures; sound enough for "what's popular right now."
+
+**Deliberately not persisted:** no Postgres copy. The list rebuilds itself from live traffic within
+15 minutes of any outage, so persisting it buys nothing and would need its own invalidation story.
+
+**Caching, three tiers, mirroring the read path's Caffeine → Redis → Postgres tiering (D-023):**
+1. a per-instance snapshot held 5 seconds behind a single `AtomicReference` — no network call;
+2. a snapshot of the same age shared in Redis (`popular:snapshot`, one cheap `GET`) — so across N
+   replicas only whichever instance's local snapshot expires first pays for the union in a given
+   5-second window, not all N;
+3. the real 15-key union, run only on tier-2 miss.
+
+**`AtomicReference`, not `synchronized`, for the local snapshot** — same reasoning as D-014's
+`ConcurrentHashMap.compute` choice. The cached answer and its timestamp are bundled into one
+immutable record so the swap is a single atomic write. Two separate fields (`titles`,
+`computedAt`) would let a reader observe a new list paired with a stale timestamp — a torn read —
+and `synchronized` would serialise every `BROWSE_READ` request through one lock to prevent a race
+that a single-object swap avoids for free.
+
+**Known limitation, same shape as D-031, not the same defect:** the per-instance tier is not shared
+across replicas, so under multiple instances the *ranking is always correct* (Redis is the one
+shared source of truth) but the 5-second cache windows are not synchronized, and instances whose
+windows miss at the same moment briefly duplicate the union. Unlike D-031, nothing here compounds
+with replica count into wrong behaviour — worst case is redundant work, bounded by tier 2. At the
+project's current 1 replica this never triggers.
+
+*Rejected:* Count-Min/HyperLogLog-style sketches (D-007/D-011 territory, and unnecessary — a Redis
+sorted set already stays ordered); a Caffeine-backed shared cache (Caffeine is per-JVM by design,
+so it cannot serve as the cross-replica tier a `ZUNIONSTORE`-avoidance layer needs); a Postgres copy
+(no invalidation story worth building for data that already self-heals in 15 minutes).
+
+---
+
+## D-035 · Fleet-wide rate limiting moves to nginx; per-instance limits stay, resized to a capped container · `SETTLED`
+
+Supersedes **D-031**, which recorded the defect without choosing a fix. Does not conflict with
+**D-033** — see the last section.
+
+**The defect, restated.** D-031 read as two bugs (the token buckets and the ingest `Semaphore` both
+being per-instance state) and it is one. A limit is wrong when *the resource it describes* and *the
+place it is stored* disagree:
+
+| Limit | Describes | Stored | Verdict |
+|---|---|---|---|
+| Token buckets (8000/1500/500) | the **system's** measured ceiling | per instance | **misplaced** |
+| Ingest `Semaphore` (1000 permits) | one **JVM's** in-flight capacity | per instance | correct already |
+
+The semaphore was never broken. It bounds how many requests sit waiting on Kafka *inside one JVM* —
+that process's own threads and heap — so a per-instance home is the right one, and N replicas
+legitimately holding N × 1000 in flight is the intended behaviour, not a multiplication bug.
+
+The token buckets were sized in phase 2 against a whole-machine ceiling, then stored per instance.
+Scaling to 3 replicas tripled the fleet-wide limit and switched the protection off at the moment
+capacity was added: shedding fell from 23.88%/18.33% to **0.00%** (D-031).
+
+**The rule adopted: a limit belongs at the layer that owns the resource it protects.**
+
+**Decision, three parts:**
+
+1. **Fleet-wide rate limits move to nginx** (`limit_req_zone`, one zone per tier, keyed on a
+   constant so every request shares one bucket). nginx is the only component of which exactly one
+   exists, so a limit placed there cannot multiply with replica count. `burst == rate` with
+   `nodelay` mirrors the application `TokenBucket`'s capacity-equals-refill semantics; `nodelay`
+   because queueing a surge turns a fast 429 into a slow timeout.
+2. **The application's `AdmissionControl` stays, resized** via `PLAYHEAD_ADMISSION` to what one
+   *capped* container can serve. It stops being a misplaced global limit and becomes a correctly
+   placed local one — same rule, other direction. It also remains the only source of
+   `admission.admitted` / `admission.shed` per tier, which the Grafana dashboards, BENCHMARKS.md
+   and D-030's priority proof are all written in terms of.
+3. **The ingest `Semaphore` is untouched.** Nothing about it was wrong.
+
+*Rejected:* **a shared token bucket in Redis** — correct fleet-wide, but it puts a network hop on
+the admission path of *every* request including ingest, whose p99 < 25 ms (NFR-2) rests on the
+endpoint doing nothing but appending to Kafka. Worse, it forces a choice between failing open (no
+protection during a Redis incident, i.e. exactly when it is needed) and failing closed (a slow cache
+takes down the write path, strictly worse than today, where a dead Redis degrades reads only). Both
+violate D-025/D-027's finding that Redis must not be a hard dependency.
+
+*Rejected:* **instances discovering the replica count and dividing** (self-registering TTL keys in
+Redis, `localLimit = globalLimit / replicaCount`). Off the request path, so NFR-2 survives, and it
+was the leading candidate for a while. Dropped once the rule above was stated properly: it is
+machinery for keeping a global limit correct *while leaving it in the wrong place*. Put the global
+limit at the single-instance layer and there is nothing to divide, no fleet-size discovery, no
+staleness window.
+
+**Why this does not re-open D-033.** D-033 removed a CPU cap from `docker-compose.yml` because the
+cap existed solely to enable a multi-replica measurement this hardware cannot support, and it made
+the single-replica numbers worse than the ones BENCHMARKS.md publishes. That reasoning is about the
+**measurement** configuration. The cap here lands in a **separate** `docker-compose.prod.yml`
+overlay, for deployment rather than measurement; the base file stays uncapped and keeps matching the
+published results. Different file, different purpose, nothing overturned.
+
+**Not measured, and labelled so.** The capped tier rates (1300/250/85) are the enum defaults scaled
+by the CPU ratio (2 of 12 cores), which assumes throughput is CPU-bound and scales linearly. Both
+assumptions are approximations. D-033's finding stands — honest numbers for a capped, multi-replica
+configuration need the load generator on separate hardware from the service. No benchmark claim is
+made from this overlay until that exists.
+
+**Verified 2026-09-05, both layers, both replica counts.** `load/nginx_limit_check.js`, browse tier
+offered at 1,500 r/s against nginx's 500 r/s ceiling and the app's capped 85 r/s:
+
+| | 1 replica | 3 replicas |
+|---|---|---|
+| shed by nginx | 14,517 (968/s) | 13,345 (890/s) |
+| admitted through nginx | 532/s | 519/s |
+| served `200` | 90/s | 271/s |
+
+The nginx ceiling holds at ~520 r/s at **both** replica counts — the multiplication D-031 measured
+is gone, and shedding stays near 63% instead of collapsing to 0.00% at 3 replicas. Served capacity
+still scales with the fleet (90 → 271 r/s, ~3×), which is the correct behaviour: per-container
+limits *should* sum as containers are added; only the system-wide ceiling must not. Confirmed
+independently in nginx's own error log — 14,517 `limiting requests` entries naming
+`zone="browse_read"`, matching the client-side count exactly.
+
+**Two defects found and fixed during that verification, both silent:**
+
+1. **The `limit_req_zone` keys were inert.** The zones key on `$server_name`, the `server` block set
+   no `server_name`, and nginx skips rate limiting entirely when a key evaluates to empty. The first
+   run measured 1,488 r/s sailing past a 500 r/s limit with **zero** log entries. A rate limiter that
+   silently does nothing is worse than none, because every metric looks healthy. Fixed by setting
+   `server_name playhead`.
+2. **`ScalingController` scaled the wrong file set.** `scaleTo` ran `docker compose up --scale`
+   with no `-f` flags, so it used `docker-compose.yml` alone — every replica the pre-scaler started
+   would have come up *uncapped* and without the resized `PLAYHEAD_ADMISSION`, discarding the caps
+   at the exact moment the fleet grows. Fixed with a `composeFiles` system property, defaulting to
+   the base file so benchmark runs are unaffected. Verified: after an unattended 1 → 3 pre-scale,
+   all three replicas carried `cpus=2.0`, `mem=1g` and the resized rates.
+
+**Also verified: the pre-scale itself still works under the overlay.** Event scheduled at
+`01:28:02` with `expectedPeakRps: 21000`; controller scaled 1 → 3 at `01:27:32`, exactly the
+30-second lead (poll 10s + measured start 10s + margin 10s), unattended.
+
+**Edge shedding is dramatically cheaper than app shedding**, which is the practical argument for
+this layering beyond correctness. Same offered load, browse tier, 1 replica:
+
+| shed at | p95 latency | avg |
+|---|---|---|
+| application only (nginx zones inert) | 48.58 ms | 8.6 ms |
+| nginx (working) | **1.6 ms** | **0.9 ms** |
+
+A request rejected at nginx never occupies a Tomcat thread, a connection, or a JVM. An earlier run
+at 1,500 VUs made the same point destructively: with the app absorbing everything, responses
+averaged **4.23 s** and k6 could only achieve 296 r/s of its 2,000 r/s target — the load generator
+was measuring queueing, not capacity.

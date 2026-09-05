@@ -67,6 +67,21 @@ public class ScalingController {
             System.getProperty("scheduleUrl", "http://localhost:8080/v1/events/upcoming");
     static final String COMPOSE_SERVICE = System.getProperty("composeService", "app");
 
+    /**
+     * Compose files the scale command runs against, comma-separated, in overlay order.
+     *
+     * <p>Not cosmetic. {@code docker compose} defaults to {@code docker-compose.yml} alone, so a
+     * controller that omits {@code -f} scales the *base* definition — and every replica it starts
+     * comes up without the {@code docker-compose.prod.yml} overlay's CPU cap and resized
+     * {@code PLAYHEAD_ADMISSION} (D-035). The caps would be silently discarded at precisely the
+     * moment the fleet grows, which is the one moment they matter.
+     *
+     * <p>Defaults to the base file so benchmark runs are unaffected. For the capped deployment:
+     * {@code -DcomposeFiles=docker-compose.yml,docker-compose.prod.yml}
+     */
+    static final String COMPOSE_FILES =
+            System.getProperty("composeFiles", "docker-compose.yml");
+
     static final int LEAD_SECONDS =
             POLL_INTERVAL_SECONDS + CONTAINER_START_SECONDS + SAFETY_MARGIN_SECONDS;
 
@@ -133,8 +148,13 @@ public class ScalingController {
 
     /** The hand. The only method that knows the orchestrator is Compose. */
     private static void scaleTo(int replicas) throws Exception {
-        List<String> cmd = List.of("docker", "compose", "up", "-d", "--no-recreate",
-                "--scale", COMPOSE_SERVICE + "=" + replicas);
+        List<String> cmd = new ArrayList<>(List.of("docker", "compose"));
+        for (String file : COMPOSE_FILES.split(",")) {
+            cmd.add("-f");
+            cmd.add(file.strip());
+        }
+        cmd.addAll(List.of("up", "-d", "--no-recreate",
+                "--scale", COMPOSE_SERVICE + "=" + replicas));
         Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
         String output = new String(p.getInputStream().readAllBytes());
         int exit = p.waitFor();

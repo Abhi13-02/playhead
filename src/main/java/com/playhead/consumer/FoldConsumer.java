@@ -3,6 +3,7 @@ package com.playhead.consumer;
 import com.playhead.domain.Fold;
 import com.playhead.domain.Heartbeat;
 import com.playhead.domain.PlaybackState;
+import com.playhead.service.PopularityService;
 
 import java.time.Duration;
 
@@ -38,6 +39,11 @@ import tools.jackson.databind.ObjectMapper;
  * <p>The Kafka offset is committed only after the method returns cleanly. A failed Postgres
  * transaction throws, the offset is not advanced, and the message is redelivered — safe because the
  * upsert's sequence guard makes reprocessing a no-op.
+ *
+ * <p>Every heartbeat, including stale or duplicate ones, also casts one vote for its title in
+ * {@link PopularityService} — unlike the state upsert, popularity is a rough "how much is being
+ * watched" signal (D-034), not a source of truth, so a duplicate vote is harmless and not worth
+ * gating on {@code stateRowsApplied}.
  */
 @Component
 public class FoldConsumer {
@@ -68,11 +74,17 @@ public class FoldConsumer {
     private final JdbcClient jdbcClient;
     private final StringRedisTemplate redis;
     private final ObjectMapper objectMapper;
+    private final PopularityService popularityService;
 
-    public FoldConsumer(JdbcClient jdbcClient, StringRedisTemplate redis, ObjectMapper objectMapper) {
+    public FoldConsumer(
+            JdbcClient jdbcClient,
+            StringRedisTemplate redis,
+            ObjectMapper objectMapper,
+            PopularityService popularityService) {
         this.jdbcClient = jdbcClient;
         this.redis = redis;
         this.objectMapper = objectMapper;
+        this.popularityService = popularityService;
     }
 
     @KafkaListener(topics = "heartbeats", groupId = "fold-consumer")
@@ -99,6 +111,8 @@ public class FoldConsumer {
         if (stateRowsApplied > 0) {
             cacheState(heartbeat);
         }
+
+        popularityService.record(heartbeat.titleId());
 
         ack.acknowledge();
     }

@@ -55,7 +55,9 @@ reproduced under controlled load rather than argued about.
 
 - **Not a video player, transcoder, packager or CDN.** No media bytes pass through it.
 - **Not a recommendation engine.** It answers *where were you*, nothing more.
-- **Not an analytics platform.** No trending, top-K, or unique-viewer counting.
+- **Not an analytics platform.** `GET /v1/browse/popular-now` is a `BROWSE_READ` demo endpoint for
+  DIFF-3 (a title's heartbeat count over a 15-minute Redis window), not a trending/analytics
+  feature — no sketch structures, no exact viewer counts, no persistence (D-034).
 - **Not an auth or entitlement service.** Profiles are opaque identifiers.
 - **Not an algorithms showcase.** Where a good library exists, use it and say why. Caffeine is
   W-TinyLFU written by the people who published the paper; reimplementing it proves nothing about
